@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f4f7f5" />
+    <title>RiverCast | WebGIS Forecasting</title>
+    <link rel="preconnect" href="https://unpkg.com" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/toolbar.css" />
+    <link rel="stylesheet" href="/static/dialog.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="RiverCast home">
+          <span class="brand-mark" aria-hidden="true">≈</span>
+          <span><strong>rivercast</strong><small>FORECAST CONSOLE</small></span>
+        </a>
+
+        <div class="station-heading"><div class="sidebar-heading">MONITORING NETWORK</div><button id="add-station-button" class="add-site-button" type="button" title="Configure a station">+ Add site</button></div>
+        <div class="network-summary"><span class="live-dot"></span><span id="network-count">Loading stations…</span><span class="demo-tag">DEMO</span></div>
+        <div id="station-list" class="station-list" aria-label="Monitoring stations"></div>
+
+        <div class="sidebar-foot">
+          <div class="foot-icon">i</div>
+          <p>Forecasts shown here use <strong>synthetic demo data</strong>. They are not suitable for operational or emergency decisions.</p>
+        </div>
+      </aside>
+
+      <main class="main-area">
+        <header class="topbar">
+          <div class="breadcrumbs"><span>Workspace</span><span class="crumb-slash">/</span><strong>River monitoring</strong></div>
+          <div class="topbar-right"><span class="updated-label">UPDATED <strong id="updated-at">—</strong></span><a class="template-link" href="/static/observations-template.csv" download>CSV format</a><button class="toolbar-button" id="run-button" type="button">Run forecast</button><button class="import-button" id="import-button" type="button">Import data</button><input id="file-input" type="file" accept=".csv,.json,.nc,.grib,.grb,.tif,.tiff" hidden /><span class="avatar">RC</span></div>
+        </header>
+
+        <section class="page-content">
+          <div class="page-title-row">
+            <div>
+              <div class="eyebrow">HYDROLOGY <span>•</span> INDIA NETWORK</div>
+              <h1>River forecast overview</h1>
+              <p class="subtitle">Monitor river conditions and explore the next 48 hours.</p>
+            </div>
+            <div class="forecast-chip"><span class="chip-pulse"></span> 48 HOUR OUTLOOK</div>
+          </div>
+
+          <section class="metrics" aria-label="Network overview">
+            <article class="metric-card"><div class="metric-label">MONITORING SITES</div><div class="metric-value" id="metric-sites">—</div><div class="metric-note"><span class="note-dot green"></span> Across 4 river basins</div></article>
+            <article class="metric-card"><div class="metric-label">NORMAL CONDITIONS</div><div class="metric-value" id="metric-normal">—</div><div class="metric-note"><span class="note-dot green"></span><span id="normal-note">Within expected range</span></div></article>
+            <article class="metric-card"><div class="metric-label">NEEDS ATTENTION</div><div class="metric-value" id="metric-attention">—</div><div class="metric-note"><span class="note-dot amber"></span> Watch or warning status</div></article>
+            <article class="metric-card metric-card-weather"><div class="metric-label">SELECTED SITE</div><div class="metric-weather"><span class="weather-icon">⌁</span><span><strong id="metric-current">—</strong><small>Current discharge · m³/s</small></span></div></article>
+          </section>
+
+          <section class="map-card">
+            <div class="section-header map-header"><div><h2>Network map</h2><p>Station status across the monitoring area</p></div><div class="map-legend"><span><i class="legend-dot normal"></i>Normal</span><span><i class="legend-dot watch"></i>Watch</span><span><i class="legend-dot warning"></i>Warning</span></div></div>
+            <div id="map" role="application" aria-label="Map of river monitoring stations"></div>
+            <div class="map-attribution">© OpenStreetMap contributors</div>
+          </section>
+
+          <section class="forecast-card">
+            <div class="section-header forecast-header"><div><h2>Hydrograph</h2><p id="forecast-subtitle">Select a station to view its time series</p></div><div class="chart-selectors"><label class="variable-select">SERIES <select id="series-select"><option value="forecast">Forecast</option><option value="observations">Observed history</option></select></label><label class="variable-select">VARIABLE <select id="variable-select"><option value="discharge">Discharge (m³/s)</option><option value="rainfall">Rainfall (mm/h)</option></select></label></div></div>
+            <div class="chart-wrap"><svg id="forecast-chart" role="img" aria-label="Forecast time series chart" viewBox="0 0 900 220" preserveAspectRatio="none"></svg></div>
+            <div class="time-control"><label for="time-slider">FORECAST TIME</label><input id="time-slider" type="range" min="0" max="48" value="0" step="1" /><output id="time-readout">—</output><strong id="value-readout">—</strong></div>
+            <div class="chart-axis"><span id="chart-start">—</span><span>+12h</span><span>+24h</span><span>+36h</span><span id="chart-end">+48h</span></div>
+            <div class="chart-footer"><span><i class="chart-key"></i><span id="chart-legend">Forecast discharge</span></span><span id="threshold-note">Dashed line: alert threshold</span></div>
+          </section>
+          <footer class="page-footer">RiverCast WebGIS <span>·</span> Prototype with synthetic data</footer>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <dialog id="station-dialog" class="station-dialog">
+      <form id="station-form">
+        <div class="dialog-heading"><div><div class="eyebrow">NETWORK SETUP</div><h2>Add monitoring site</h2></div><button id="close-station-dialog" class="dialog-close" type="button" aria-label="Close">×</button></div>
+        <p class="dialog-description">Set the station location and its discharge alert threshold.</p>
+        <label>Site name<input id="site-name" name="name" required maxlength="160" placeholder="e.g. Riverside" /></label>
+        <label>River or basin<input id="site-river" name="river" required maxlength="160" placeholder="e.g. Upper Valley" /></label>
+        <label>Station ID<input id="site-id" name="id" required minlength="3" maxlength="100" pattern="[a-z0-9]+(-[a-z0-9]+)*" /></label>
+        <div class="form-grid"><label>Latitude<input name="latitude" type="number" required min="-90" max="90" step="any" placeholder="26.14" /></label><label>Longitude<input name="longitude" type="number" required min="-180" max="180" step="any" placeholder="91.73" /></label></div>
+        <label>Alert threshold (m³/s)<input name="alert_level_m3s" type="number" required min="0.01" step="any" placeholder="12000" /></label>
+        <div class="dialog-actions"><button class="dialog-cancel" id="cancel-station-dialog" type="button">Cancel</button><button class="import-button" type="submit">Add site</button></div>
+      </form>
+    </dialog>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

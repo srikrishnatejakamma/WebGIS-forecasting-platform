@@ -1,0 +1,104 @@
+WebGIS Forecasting Platform Requirements
+========================================
+
+1. Purpose and scope
+--------------------
+Build a web-based geographic information system (WebGIS) for ingesting,
+processing, forecasting, and visualizing environmental data. The platform
+should support hydrological, meteorological, or related applications and make
+forecast results accessible to researchers, forecasters, and other authorized
+users.
+
+The initial implementation should target a defined geographic area and a
+specific forecasting use case. The supported data sources, forecast variables,
+update frequency, and forecast horizon must be configurable for that use case.
+
+2. Functional requirements
+-------------------------
+
+2.1 Data ingestion and storage
+- Ingest gridded data in formats such as NetCDF, GRIB, and GeoTIFF, along with
+  station or sensor observations in formats such as CSV and JSON.
+- Support scheduled or event-triggered ingestion from configured providers,
+  models, and sensor networks.
+- Validate incoming data and record its source, timestamp, spatial coverage,
+  units, and processing status.
+- Store vector features and application metadata in PostgreSQL with PostGIS.
+- Store large raster and gridded datasets in object storage. Use suitable
+  cloud-optimized formats, such as Cloud-Optimized GeoTIFF (COG) or Zarr, when
+  they improve access for the selected workloads.
+
+2.2 Processing and forecasting
+- Provide repeatable pipelines to clean, reproject, transform, and prepare
+  incoming data for analysis.
+- Run configured hydrological, meteorological, or statistical forecasting
+  models and retain model versions, input references, run times, and outputs.
+- Allow forecast runs to be started on a schedule, when new data arrives, or
+  by an authorized user.
+- Report processing failures and make run status available through the API and
+  user interface.
+- Where appropriate, use tools such as Python, xarray, rasterio, and Dask for
+  geospatial and array processing. Candidate models may include HEC-HMS, SWAT,
+  streamflow prediction models, or numerical weather prediction products.
+
+2.3 Backend and geospatial services
+- Provide a documented API for querying observations, forecast runs, map
+  layers, and time-series data, and for starting authorized model runs.
+- Serve raster and vector data efficiently through suitable standards or
+  formats, such as XYZ tiles, WMS, WMTS, GeoJSON, or Mapbox Vector Tiles.
+- Apply authentication and authorization to protected data and operations.
+- Consider FastAPI or Node.js for the application API and GeoServer, Tegola,
+  or a custom tile service for map delivery.
+
+2.4 Web application
+- Display configured basemaps, observation layers, and forecast layers on an
+  interactive map.
+- Let users select a location, station, or river gauge to inspect associated
+  observations and forecast time series.
+- Provide time controls to browse forecast steps and show the valid time and
+  units for the displayed data.
+- Present model run status, data timestamps, and relevant missing-data or
+  processing errors clearly.
+- Support responsive layouts for the intended desktop and mobile devices.
+- Consider OpenLayers, Leaflet, or Mapbox GL JS for mapping, with React or Vue
+  for the application interface and a suitable charting library for time
+  series.
+
+3. Quality and operational requirements
+---------------------------------------
+- Design ingestion and processing to handle the expected data volume and
+  update frequency without loading entire large datasets when chunked or
+  windowed access is practical.
+- Keep data provenance and forecast-run metadata so results can be reproduced
+  and audited.
+- Log application, ingestion, and model-run errors and expose operational
+  health information to administrators.
+- Package services for repeatable deployment; Docker may be used. Select cloud
+  storage and orchestration services based on the deployment environment.
+- Protect credentials and restrict access to data and operations according to
+  user roles.
+
+4. Candidate technology choices
+-------------------------------
+These are options to evaluate, not mandatory dependencies:
+
+- Frontend: React or Vue; OpenLayers, Leaflet, or Mapbox GL JS; Tailwind CSS
+- API: Python with FastAPI, or Node.js
+- Spatial database: PostgreSQL with PostGIS
+- Map services: GeoServer, Tegola, or a custom tile service
+- Data processing: Python, xarray, pandas, rasterio, and Dask
+- Orchestration and deployment: Prefect or Apache Airflow; Docker; cloud
+  services selected for the target environment
+- Supporting geospatial tools: GDAL and Tippecanoe where appropriate
+
+5. Decisions required before implementation
+--------------------------------------------
+- Select the initial application: hydrological forecasting, meteorological
+  forecasting, or another defined environmental use case.
+- Define the study area, forecast variables, forecast horizon, and update
+  frequency.
+- Identify data providers, licensing constraints, and expected data volumes.
+- Select the forecasting models and map-service standards required by the
+  target users.
+- Define expected user roles, deployment environment, availability, and
+  performance targets.
