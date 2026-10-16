@@ -6,7 +6,7 @@ from datetime import datetime
 
 from geoalchemy2 import Geometry
 from geoalchemy2.elements import WKBElement
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -68,3 +68,15 @@ class ForecastPointRecord(Base):
     discharge_m3s: Mapped[float] = mapped_column(Float, nullable=False)
     rainfall_mm: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     run: Mapped[ForecastRunRecord] = relationship(back_populates="points")
+
+
+class GriddedAssetRecord(Base):
+    __tablename__ = "gridded_assets"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_format: Mapped[str] = mapped_column(String(20), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    processing_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

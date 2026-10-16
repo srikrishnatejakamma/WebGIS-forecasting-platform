@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse
 from geoalchemy2.shape import from_shape
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -26,7 +25,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from .database import SessionLocal, get_session, initialize_database
 from .forecasting import create_forecast_run
-from .models import ForecastRunRecord, ObservationRecord, StationRecord
+from .models import ForecastRunRecord, GriddedAssetRecord, ObservationRecord, StationRecord
+from .processing import convert_to_cog
+from .storage import ensure_bucket, upload as upload_object
 
 
 ROOT = Path(__file__).resolve().parent
@@ -157,6 +158,8 @@ def _point(longitude: float, latitude: float):
 async def lifespan(_: FastAPI):
     await run_in_threadpool(initialize_database)
     await run_in_threadpool(_seed_demo_data)
+    if os.getenv("MINIO_ENDPOINT"):
+        await run_in_threadpool(ensure_bucket)
     scheduler.add_job(_scheduled_forecasts, "interval", hours=6, id="rivercast-forecasts", replace_existing=True)
     scheduler.start()
     yield
@@ -469,7 +472,7 @@ def _inspect_raster(path: Path) -> dict:
 
 
 @app.post("/api/data/gridded", dependencies=[Depends(_write_access)])
-async def upload_gridded_data(file: UploadFile = File(...)) -> dict:
+async def upload_gridded_data(file: UploadFile = File(...), session: Session = Depends(get_session)) -> dict:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_RASTER_TYPES:
         raise HTTPException(status_code=415, detail=f"Supported formats: {', '.join(sorted(ALLOWED_RASTER_TYPES))}")
@@ -478,47 +481,51 @@ async def upload_gridded_data(file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=413, detail="Gridded dataset must be smaller than 200 MB")
     RASTER_DIR.mkdir(parents=True, exist_ok=True)
     asset_id = uuid.uuid4().hex
-    target = RASTER_DIR / f"{asset_id}{suffix}"
-    target.write_bytes(raw)
-    object_key = f"rasters/{target.name}"
+    source = RASTER_DIR / f"{asset_id}-source{suffix}"
+    target = RASTER_DIR / f"{asset_id}.tif"
+    source.write_bytes(raw)
+    original_name = Path(file.filename or "dataset").name
+    uploaded_at = datetime.now(UTC).isoformat()
+    object_key = f"rasters/{asset_id}.tif"
+    try:
+        spatial = await run_in_threadpool(convert_to_cog, source, target)
+    except Exception as exc:
+        source.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+        failed_metadata = {"id": asset_id, "filename": original_name, "source": "user-upload", "source_format": suffix.lstrip("."), "size_bytes": len(raw), "uploaded_at": uploaded_at, "storage": "minio" if os.getenv("MINIO_ENDPOINT") else "local", "object_key": object_key, "processing_status": "failed", "processing_error": str(exc)[:300]}
+        session.add(GriddedAssetRecord(id=asset_id, filename=original_name, source_format=suffix.lstrip("."), object_key=object_key, processing_status="failed", metadata_json=failed_metadata))
+        session.commit()
+        raise HTTPException(status_code=422, detail=f"Could not prepare a Cloud-Optimized GeoTIFF: {str(exc)[:300]}") from exc
     storage = "local"
-    endpoint = os.getenv("OBJECT_STORAGE_ENDPOINT", "").strip()
-    bucket = os.getenv("OBJECT_STORAGE_BUCKET", "rivercast")
-    if endpoint:
+    if os.getenv("MINIO_ENDPOINT"):
         try:
-            import boto3
-
-            client = boto3.client("s3", endpoint_url=endpoint)
-            try:
-                client.head_bucket(Bucket=bucket)
-            except Exception:
-                client.create_bucket(Bucket=bucket)
-            client.upload_file(str(target), bucket, object_key)
-            storage = "s3-compatible"
+            await run_in_threadpool(upload_object, target, object_key, "image/tiff")
+            await run_in_threadpool(upload_object, source, f"sources/{asset_id}{suffix}")
+            storage = "minio"
         except Exception as exc:
+            source.unlink(missing_ok=True)
             target.unlink(missing_ok=True)
-            raise HTTPException(status_code=502, detail=f"Object storage upload failed: {str(exc)[:200]}") from exc
-    metadata = {"id": asset_id, "filename": Path(file.filename or "dataset").name, "size_bytes": len(raw), "uploaded_at": datetime.now(UTC).isoformat(), "storage": storage, "object_key": object_key, **_inspect_raster(target)}
-    if suffix in {".tif", ".tiff"}:
-        metadata["tile_url"] = f"/api/data/gridded/{asset_id}/tiles/{{z}}/{{x}}/{{y}}.png"
+            failed_metadata = {"id": asset_id, "filename": original_name, "source": "user-upload", "source_format": suffix.lstrip("."), "size_bytes": len(raw), "uploaded_at": uploaded_at, "storage": "minio", "object_key": object_key, "processing_status": "failed", "processing_error": f"MinIO upload failed: {str(exc)[:200]}"}
+            session.add(GriddedAssetRecord(id=asset_id, filename=original_name, source_format=suffix.lstrip("."), object_key=object_key, processing_status="failed", metadata_json=failed_metadata))
+            session.commit()
+            raise HTTPException(status_code=502, detail=f"MinIO upload failed: {str(exc)[:200]}") from exc
+    metadata = {"id": asset_id, "filename": original_name, "source": "user-upload", "source_format": suffix.lstrip("."), "size_bytes": len(raw), "uploaded_at": uploaded_at, "storage": storage, "object_key": object_key, "processing_status": "complete", **spatial, **_inspect_raster(target)}
+    metadata["tile_url"] = f"/api/data/gridded/{asset_id}/tiles/{{z}}/{{x}}/{{y}}.png"
     target.with_suffix(target.suffix + ".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    session.add(GriddedAssetRecord(id=asset_id, filename=metadata["filename"], source_format=suffix.lstrip("."), object_key=object_key, processing_status="complete", metadata_json=metadata))
+    session.commit()
     return metadata
 
 
 @app.get("/api/data/gridded")
-def list_gridded_data() -> list[dict]:
-    if not RASTER_DIR.exists():
-        return []
+def list_gridded_data(session: Session = Depends(get_session)) -> list[dict]:
+    records = session.scalars(select(GriddedAssetRecord).order_by(GriddedAssetRecord.uploaded_at.desc())).all()
     assets = []
-    for metadata_file in RASTER_DIR.glob("*.json"):
-        try:
-            metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-            if metadata.get("format") in {"tif", "tiff"}:
-                metadata.setdefault("tile_url", f"/api/data/gridded/{metadata['id']}/tiles/{{z}}/{{x}}/{{y}}.png")
-            assets.append(metadata)
-        except (OSError, json.JSONDecodeError):
-            continue
-    return sorted(assets, key=lambda item: item.get("uploaded_at", ""), reverse=True)
+    for record in records:
+        metadata = dict(record.metadata_json)
+        metadata.setdefault("tile_url", f"/api/data/gridded/{record.id}/tiles/{{z}}/{{x}}/{{y}}.png")
+        assets.append(metadata)
+    return assets
 
 
 @app.get("/api/data/gridded/{asset_id}/tiles/{z}/{x}/{y}.png")

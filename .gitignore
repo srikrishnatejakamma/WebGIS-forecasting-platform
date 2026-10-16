@@ -1,4 +1,7 @@
 .venv/
+venv/
+node_modules/
+frontend/dist/
 __pycache__/
 *.py[cod]
 .pytest_cache/

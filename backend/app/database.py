@@ -26,7 +26,7 @@ def initialize_database() -> None:
     # is unavailable instead of silently starting with non-persistent data.
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
-    from .models import ForecastPointRecord, ForecastRunRecord, ObservationRecord, StationRecord  # noqa: F401
+    from .models import ForecastPointRecord, ForecastRunRecord, GriddedAssetRecord, ObservationRecord, StationRecord  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
 
