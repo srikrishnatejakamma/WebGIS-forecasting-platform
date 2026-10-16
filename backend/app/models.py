@@ -9,7 +9,7 @@ from geoalchemy2.elements import WKBElement
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from database import Base
+from .database import Base
 
 
 class StationRecord(Base):

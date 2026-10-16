@@ -17,7 +17,6 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from geoalchemy2.shape import from_shape
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -25,9 +24,9 @@ from sqlalchemy.orm import Session, joinedload
 from starlette.concurrency import run_in_threadpool
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from database import SessionLocal, get_session, initialize_database
-from forecasting import create_forecast_run
-from models import ForecastRunRecord, ObservationRecord, StationRecord
+from .database import SessionLocal, get_session, initialize_database
+from .forecasting import create_forecast_run
+from .models import ForecastRunRecord, ObservationRecord, StationRecord
 
 
 ROOT = Path(__file__).resolve().parent
@@ -170,18 +169,10 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
-app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
-
-
 def _write_access(x_api_token: str | None = Header(default=None)) -> None:
     expected = os.getenv("API_WRITE_TOKEN", "").strip()
     if expected and x_api_token != expected:
         raise HTTPException(status_code=401, detail="A valid X-API-Token is required")
-
-
-@app.get("/", include_in_schema=False)
-def home() -> FileResponse:
-    return FileResponse(ROOT / "static" / "index.html")
 
 
 @app.get("/api/health")
@@ -191,6 +182,11 @@ def health(session: Session = Depends(get_session)) -> dict[str, str | bool]:
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
     return {"status": "ok", "database": "postgis", "data_mode": "persistent", "write_auth_enabled": bool(os.getenv("API_WRITE_TOKEN", "").strip())}
+
+
+@app.get("/health", include_in_schema=False)
+def root_health(session: Session = Depends(get_session)) -> dict[str, str | bool]:
+    return health(session)
 
 
 def _latest_observation(session: Session, station_id: str) -> ObservationRecord | None:

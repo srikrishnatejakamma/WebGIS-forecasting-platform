@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
-from models import ForecastPointRecord, ForecastRunRecord, ObservationRecord, StationRecord
+from .models import ForecastPointRecord, ForecastRunRecord, ObservationRecord, StationRecord
 
 
 MODEL_NAME = "rivercast-rainfall-runoff"

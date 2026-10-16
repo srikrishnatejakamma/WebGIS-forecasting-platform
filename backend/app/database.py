@@ -11,7 +11,7 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg://rivercast:rivercast@localhost:5432/rivercast",
+    "postgresql+psycopg://rivercast:rivercast-local@localhost:5432/rivercast",
 )
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
@@ -26,7 +26,7 @@ def initialize_database() -> None:
     # is unavailable instead of silently starting with non-persistent data.
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
-    from models import ForecastPointRecord, ForecastRunRecord, ObservationRecord, StationRecord  # noqa: F401
+    from .models import ForecastPointRecord, ForecastRunRecord, ObservationRecord, StationRecord  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
 
