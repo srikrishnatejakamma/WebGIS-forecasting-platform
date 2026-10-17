@@ -88,6 +88,7 @@ function App() {
   const riverGaugeLayer = useRef(null);
   const airQualitySource = useRef(null);
   const airQualityLayer = useRef(null);
+  const airQualityHeatLayer = useRef(null);
   const weatherStationsRef = useRef([]);
   const riverStationsRef = useRef([]);
   const airQualityStationsRef = useRef([]);
@@ -127,7 +128,9 @@ function App() {
   const [forecastStep, setForecastStep] = useState(0);
   const [measureMode, setMeasureMode] = useState(null);
   const [lastMeasurement, setLastMeasurement] = useState('');
-  const [liveLayers, setLiveLayers] = useState({ rainfall: false, radar: false, cyclones: false, riverGauges: false, airQuality: false });
+  const [airHeatRadius, setAirHeatRadius] = useState(18);
+  const [airHeatBlur, setAirHeatBlur] = useState(24);
+  const [liveLayers, setLiveLayers] = useState({ rainfall: false, radar: false, cyclones: false, riverGauges: false, airQuality: true });
   const [liveMeta, setLiveMeta] = useState({});
 
   const selected = stations.find((station) => station.id === selectedId) || stations[0];
@@ -186,6 +189,8 @@ function App() {
     riverGaugeLayer.current = riverLayer;
     const airMarkers = new VectorSource();
     airQualitySource.current = airMarkers;
+    const airHeatLayer = new Heatmap({ source: airMarkers, blur: airHeatBlur, radius: airHeatRadius, weight: (feature) => feature.get('heatWeight'), gradient: ['#3288bd', '#66c2a5', '#abdda4', '#ffffbf', '#fdae61', '#d7191c'], visible: false });
+    airQualityHeatLayer.current = airHeatLayer;
     const airLayer = new VectorLayer({ source: new Cluster({ distance: 32, source: airMarkers }), visible: false, style: (clusterFeature) => {
       const members = clusterFeature.get('features') || [];
       if (members.length > 1) return new Style({ image: new CircleStyle({ radius: Math.min(16, 8 + Math.log2(members.length)), fill: new Fill({ color: '#d66b36dd' }), stroke: new Stroke({ color: '#fff', width: 2 }) }), text: new Text({ text: String(members.length), fill: new Fill({ color: '#fff' }), font: '700 10px sans-serif' }) });
@@ -200,7 +205,7 @@ function App() {
     measureSource.current = measurements;
     const measureLayer = new VectorLayer({ source: measurements, style: new Style({ stroke: new Stroke({ color: '#174db5', width: 4, lineDash: [8, 5] }), fill: new Fill({ color: '#4687ef55' }), image: new CircleStyle({ radius: 6, fill: new Fill({ color: '#174db5' }), stroke: new Stroke({ color: '#fff', width: 2 }) }) }), zIndex: 1000 });
     // Keep measurement sketches above weather/raster overlays so they remain visible.
-    const map = new Map({ target: mapElement.current, layers: [new TileLayer({ source: new OSM() }), markerLayer, weatherMarkerLayer, riverLayer, airLayer, measureLayer], view: new View({ center: fromLonLat([84.4, 22.8]), zoom: 5, minZoom: 2, maxZoom: 18 }), controls: [] });
+    const map = new Map({ target: mapElement.current, layers: [new TileLayer({ source: new OSM() }), markerLayer, weatherMarkerLayer, riverLayer, airHeatLayer, airLayer, measureLayer], view: new View({ center: fromLonLat([84.4, 22.8]), zoom: 5, minZoom: 2, maxZoom: 18 }), controls: [] });
     mapObject.current = map;
     map.on('singleclick', (event) => {
       if (stationLocationPickRef.current) {
@@ -331,9 +336,16 @@ function App() {
   }, [liveLayers.riverGauges]);
 
   useEffect(() => {
-    if (!mapObject.current || !airQualityLayer.current) return;
+    if (!mapObject.current || !airQualityLayer.current || !airQualityHeatLayer.current) return;
     airQualityLayer.current.setVisible(liveLayers.airQuality);
+    airQualityHeatLayer.current.setVisible(liveLayers.airQuality);
   }, [liveLayers.airQuality]);
+
+  useEffect(() => {
+    if (!airQualityHeatLayer.current) return;
+    airQualityHeatLayer.current.setRadius(airHeatRadius);
+    airQualityHeatLayer.current.setBlur(airHeatBlur);
+  }, [airHeatRadius, airHeatBlur]);
 
   useEffect(() => {
     const map = mapObject.current;
@@ -381,10 +393,15 @@ function App() {
     if (!mapObject.current || !airQualitySource.current) return;
     const source = airQualitySource.current;
     source.clear();
-    airQualityStations.forEach((station) => source.addFeature(new Feature({
-      geometry: new Point(fromLonLat([station.longitude, station.latitude])),
-      stationId: station.station_id, name: station.name,
-    })));
+    airQualityStations.forEach((station) => {
+      const particulate = station.pollutants?.['PM2.5'] || station.pollutants?.PM10;
+      const concentration = Number(particulate?.average);
+      const heatWeight = Number.isFinite(concentration) ? Math.min(1, Math.max(0, concentration) / 250) : 0;
+      source.addFeature(new Feature({
+        geometry: new Point(fromLonLat([station.longitude, station.latitude])),
+        stationId: station.station_id, name: station.name, heatWeight,
+      }));
+    });
   }, [airQualityStations]);
 
   useEffect(() => {
@@ -733,7 +750,7 @@ function App() {
       </aside>
       <section className="map-panel">
         <div className="map-toolbar"><div><span className="map-title">River network</span><span className="map-subtitle">LIVE WEATHER · CYCLONE LAYERS</span></div><div className="map-actions"><button className="map-action" onClick={() => mapObject.current?.getView().animate({ center: fromLonLat([84.4, 22.8]), zoom: 5, duration: 500 })}>◎ <span>Overview</span></button><button className="map-action" onClick={locateUser} title="Center map on your location">⌖ <span>My location</span></button><button className={`map-action ${measureMode === 'LineString' ? 'active' : ''}`} aria-pressed={measureMode === 'LineString'} onClick={() => setMeasureMode((mode) => mode === 'LineString' ? null : 'LineString')}>↗ <span>Distance</span></button><button className={`map-action ${measureMode === 'Polygon' ? 'active' : ''}`} aria-pressed={measureMode === 'Polygon'} onClick={() => setMeasureMode((mode) => mode === 'Polygon' ? null : 'Polygon')}>▱ <span>Area</span></button><button className="map-action" onClick={() => { measureSource.current?.clear(); setLastMeasurement(''); }}>× <span>Clear measure</span></button><button className={`map-action ${liveLayers.rainfall ? 'active' : ''}`} aria-pressed={liveLayers.rainfall} onClick={() => setLiveLayers((state) => ({ ...state, rainfall: !state.rainfall }))}>🌧 <span>Rain heat</span></button><button className={`map-action ${liveLayers.radar ? 'active' : ''}`} aria-pressed={liveLayers.radar} onClick={() => setLiveLayers((state) => ({ ...state, radar: !state.radar }))}>▧ <span>Radar</span></button><button className={`map-action ${liveLayers.cyclones ? 'active' : ''}`} aria-pressed={liveLayers.cyclones} onClick={() => setLiveLayers((state) => ({ ...state, cyclones: !state.cyclones }))}>🌀 <span>Cyclones</span></button><button className="map-action" onClick={() => setActiveRasters(Object.fromEntries(rasters.map((asset) => [asset.id, true])))}>▤ <span>Show grids</span></button><button className={`map-action ${liveLayers.riverGauges ? 'active' : ''}`} aria-pressed={liveLayers.riverGauges} onClick={() => { const enable = !liveLayers.riverGauges; setLiveLayers((state) => ({ ...state, riverGauges: enable })); if (enable) mapObject.current?.getView().animate({ center: fromLonLat([0, 15]), zoom: 2, duration: 500 }); }}><span>River gauges</span></button><button className={`map-action ${liveLayers.airQuality ? 'active' : ''}`} aria-pressed={liveLayers.airQuality} onClick={() => { const enable = !liveLayers.airQuality; setLiveLayers((state) => ({ ...state, airQuality: enable })); if (enable) mapObject.current?.getView().animate({ center: fromLonLat([84.4, 22.8]), zoom: 5, duration: 450 }); }}><span>India air</span></button></div></div>
-        <div className={`map-canvas ${pickStationLocation ? "location-picking" : ""}`} ref={mapElement}>{pickStationLocation && <div className="pick-hint" role="status">Click the map to set the coordinates<button type="button" onClick={cancelStationLocationPick}>Cancel</button></div>}<div className="map-legend"><b>MAP LAYERS</b><span><i className="weather-legend metar-legend" /> Live METAR observation</span>{liveLayers.riverGauges && <span><i className="river-gauge-legend" /> Live river gauges: USGS, Canada, England</span>}{liveLayers.airQuality && <span><i className="air-quality-legend" /> CPCB air monitors</span>}{liveLayers.rainfall && <span><i className="weather-legend rainfall-legend" /> Rainfall · model</span>}{liveLayers.radar && <span><i className="weather-legend radar-legend" /> Recent radar</span>}{liveLayers.cyclones && <span><i className="weather-legend cyclone-legend" /> Cyclone alerts</span>}<span><i className="normal" /> Normal station</span><span><i className="watch" /> Watch station</span><span><i className="warning" /> Warning station</span><span><i className="weather-legend sample-legend" /> Sample flow</span><small>© OpenStreetMap · weather observations: Aviation Weather Center METAR</small></div><div className="scale-pill">{selected ? `${selected.latitude.toFixed(2)}° N  ·  ${selected.longitude.toFixed(2)}° E` : 'Map loading'}</div>{measureMode && <div className="measure-hint" role="status">{measureMode === 'LineString' ? 'Distance' : 'Area'}: click map points, then double-click to finish{lastMeasurement ? ` · Result: ${lastMeasurement}` : ''}<button type="button" onClick={() => setMeasureMode(null)}>Done</button></div>}</div>
+        <div className={`map-canvas ${pickStationLocation ? "location-picking" : ""}`} ref={mapElement}>{pickStationLocation && <div className="pick-hint" role="status">Click the map to set the coordinates<button type="button" onClick={cancelStationLocationPick}>Cancel</button></div>}<div className="map-legend"><b>MAP LAYERS</b><span><i className="weather-legend metar-legend" /> Live METAR observation</span>{liveLayers.riverGauges && <span><i className="river-gauge-legend" /> Live river gauges: USGS, Canada, England</span>}{liveLayers.airQuality && <><span><i className="air-quality-legend" /> CPCB monitors · PM2.5/PM10 heatmap</span><div className="air-heat-controls"><label>Blur <input aria-label="CPCB heatmap blur" type="range" min="1" max="50" value={airHeatBlur} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => setAirHeatBlur(Number(event.target.value))} /><output>{airHeatBlur}</output></label><label>Radius <input aria-label="CPCB heatmap radius" type="range" min="1" max="50" value={airHeatRadius} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => setAirHeatRadius(Number(event.target.value))} /><output>{airHeatRadius}</output></label></div></>}{liveLayers.rainfall && <span><i className="weather-legend rainfall-legend" /> Rainfall · model</span>}{liveLayers.radar && <span><i className="weather-legend radar-legend" /> Recent radar</span>}{liveLayers.cyclones && <span><i className="weather-legend cyclone-legend" /> Cyclone alerts</span>}<span><i className="normal" /> Normal station</span><span><i className="watch" /> Watch station</span><span><i className="warning" /> Warning station</span><span><i className="weather-legend sample-legend" /> Sample flow</span><small>© OpenStreetMap · weather observations: Aviation Weather Center METAR</small></div><div className="scale-pill">{selected ? `${selected.latitude.toFixed(2)}° N  ·  ${selected.longitude.toFixed(2)}° E` : 'Map loading'}</div>{measureMode && <div className="measure-hint" role="status">{measureMode === 'LineString' ? 'Distance' : 'Area'}: click map points, then double-click to finish{lastMeasurement ? ` · Result: ${lastMeasurement}` : ''}<button type="button" onClick={() => setMeasureMode(null)}>Done</button></div>}</div>
         <div className="map-footer"><span><i className="live-dot" /> {liveLayers.radar ? liveMeta.radar || 'Loading radar…' : liveLayers.rainfall ? liveMeta.rainfall || 'Loading rainfall…' : liveLayers.cyclones ? liveMeta.cyclones || 'Loading cyclone alerts…' : 'Live overlays are off'}</span><span>{liveLayers.cyclones && 'GDACS · '}{liveLayers.rainfall && 'Open-Meteo · '}{liveLayers.radar && <a href="https://www.rainviewer.com/" target="_blank" rel="noreferrer">RainViewer · </a>}Basemap · OpenStreetMap</span></div>
       </section>
       <aside className="detail-panel">
