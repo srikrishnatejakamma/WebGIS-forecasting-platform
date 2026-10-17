@@ -5,7 +5,6 @@ import TileLayer from 'ol/layer/Tile.js';
 import VectorLayer from 'ol/layer/Vector.js';
 import Heatmap from 'ol/layer/Heatmap.js';
 import Draw from 'ol/interaction/Draw.js';
-import Overlay from 'ol/Overlay.js';
 import OSM from 'ol/source/OSM.js';
 import XYZ from 'ol/source/XYZ.js';
 import VectorSource from 'ol/source/Vector.js';
@@ -13,7 +12,7 @@ import GeoJSON from 'ol/format/GeoJSON.js';
 import Feature from 'ol/Feature.js';
 import Point from 'ol/geom/Point.js';
 import Cluster from 'ol/source/Cluster.js';
-import { fromLonLat, transformExtent } from 'ol/proj.js';
+import { fromLonLat, toLonLat, transformExtent } from 'ol/proj.js';
 import { getArea, getLength } from 'ol/sphere.js';
 import { Circle as CircleStyle, Fill, Stroke, Style, Text } from 'ol/style.js';
 import 'ol/ol.css';
@@ -52,19 +51,29 @@ function RiverChart({ observed = [], forecast = [] }) {
   </svg>;
 }
 
+function WeatherStationDetails({ station }) {
+  return <>
+    <div className="site-title"><h1>{station.name}</h1><p>Live weather station <span>·</span> {station.station_id}</p></div>
+    <div className="flow-card"><div className="flow-card-top"><span>OBSERVED TEMPERATURE</span><span className="live-weather-label">LIVE METAR</span></div><div className="flow-value">{station.temperature_c == null ? '—' : station.temperature_c}<small>°C</small></div><div className="weather-observation-note">{station.weather || station.flight_category || 'No significant weather reported'}</div></div>
+    <div className="metadata-grid"><div><small>OBSERVATION TIME · UTC</small><b>{station.valid_at ? dateLabel(station.valid_at) + ' UTC' : 'Unavailable'}</b></div><div><small>WIND</small><b>{station.wind_speed_kmh == null ? 'Unavailable' : `${station.wind_speed_kmh.toFixed(0)} km/h`}{station.wind_direction_degrees == null ? '' : ` · ${station.wind_direction_degrees}°`}</b></div><div><small>WIND GUST</small><b>{station.wind_gust_kmh == null ? 'Unavailable' : `${station.wind_gust_kmh.toFixed(0)} km/h`}</b></div><div><small>DEW POINT</small><b>{station.dew_point_c == null ? 'Unavailable' : `${station.dew_point_c}°C`}</b></div><div><small>VISIBILITY</small><b>{station.visibility_km == null ? 'Unavailable' : `${station.visibility_km.toFixed(1)} km`}</b></div><div><small>FLIGHT CATEGORY</small><b>{station.flight_category || 'Unavailable'}</b></div></div>
+    <div className="forecast-note"><span>ⓘ</span><p>Measured airport weather observation from the Aviation Weather Center. <a href="https://aviationweather.gov/data/api/" target="_blank" rel="noreferrer">View source</a>{station.raw_report && <small className="metar-raw">{station.raw_report}</small>}</p></div>
+  </>;
+}
+
 function App() {
   const mapElement = useRef(null);
   const mapObject = useRef(null);
   const stationLayer = useRef(null);
   const weatherStationSource = useRef(null);
-  const popupElement = useRef(null);
-  const popupOverlay = useRef(null);
+  const weatherStationsRef = useRef([]);
+  const stationLocationPickRef = useRef(false);
   const measureSource = useRef(null);
   const rasterLayers = useRef([]);
   const liveLayerRefs = useRef({});
   const [stations, setStations] = useState([]);
   const [stationWeather, setStationWeather] = useState({});
   const [weatherStations, setWeatherStations] = useState([]);
+  const [activeWeatherStation, setActiveWeatherStation] = useState(null);
   const [weatherStationsStatus, setWeatherStationsStatus] = useState('Loading public METAR reports...');
   const [stationWeatherStatus, setStationWeatherStatus] = useState('Loading live weather…');
   const [selectedId, setSelectedId] = useState(null);
@@ -79,19 +88,17 @@ function App() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [showStationForm, setShowStationForm] = useState(false);
+  const [pickStationLocation, setPickStationLocation] = useState(false);
+  const [newStationCoordinates, setNewStationCoordinates] = useState({ latitude: '', longitude: '' });
   const [forecastStep, setForecastStep] = useState(0);
-  const [popupStationId, setPopupStationId] = useState(null);
-  const [popupWeatherStationId, setPopupWeatherStationId] = useState(null);
   const [measureMode, setMeasureMode] = useState(null);
   const [lastMeasurement, setLastMeasurement] = useState('');
   const [liveLayers, setLiveLayers] = useState({ rainfall: false, radar: false, cyclones: false });
   const [liveMeta, setLiveMeta] = useState({});
 
   const selected = stations.find((station) => station.id === selectedId) || stations[0];
+  weatherStationsRef.current = weatherStations;
   const selectedWeather = selected ? stationWeather[selected.id] : null;
-  const popupStation = stations.find((station) => station.id === popupStationId);
-  const popupWeather = popupStation ? stationWeather[popupStation.id] : null;
-  const popupWeatherStation = weatherStations.find((station) => station.station_id === popupWeatherStationId);
   const loadStations = useCallback(async () => {
     const rows = await api('/api/stations');
     setStations(rows);
@@ -128,35 +135,30 @@ function App() {
     // Keep measurement sketches above weather/raster overlays so they remain visible.
     const map = new Map({ target: mapElement.current, layers: [new TileLayer({ source: new OSM() }), markerLayer, weatherMarkerLayer, measureLayer], view: new View({ center: fromLonLat([84.4, 22.8]), zoom: 5, minZoom: 3, maxZoom: 18 }), controls: [] });
     mapObject.current = map;
-    const popup = new Overlay({ element: popupElement.current, positioning: 'bottom-center', offset: [0, -14], stopEvent: true, autoPan: { animation: { duration: 220 } } });
-    popupOverlay.current = popup;
-    map.addOverlay(popup);
     map.on('singleclick', (event) => {
+      if (stationLocationPickRef.current) {
+        const [longitude, latitude] = toLonLat(event.coordinate);
+        setNewStationCoordinates({ latitude: latitude.toFixed(5), longitude: longitude.toFixed(5) });
+        stationLocationPickRef.current = false;
+        setPickStationLocation(false);
+        return;
+      }
       const weatherFeature = map.forEachFeatureAtPixel(event.pixel, (item) => item, { layerFilter: (layer) => layer === weatherMarkerLayer });
       if (weatherFeature) {
         const members = weatherFeature.get('features') || [];
         if (members.length > 1) {
-          setPopupWeatherStationId(null);
-          popup.setPosition(undefined);
           map.getView().animate({ center: weatherFeature.getGeometry().getCoordinates(), zoom: Math.min((map.getView().getZoom() || 2) + 2, 14), duration: 350 });
           return;
         }
         const weatherStationFeature = members[0] || weatherFeature;
-        setPopupWeatherStationId(weatherStationFeature.get('stationId'));
-        setPopupStationId(null);
-        popup.setPosition(weatherFeature.getGeometry().getCoordinates());
+        const weatherStationId = weatherStationFeature.get('stationId');
+        setActiveWeatherStation(weatherStationsRef.current.find((station) => station.station_id === weatherStationId) || null);
         return;
       }
       const feature = map.forEachFeatureAtPixel(event.pixel, (item) => item, { layerFilter: (layer) => layer === markerLayer });
       if (feature) {
         setSelectedId(feature.get('stationId'));
-        setPopupStationId(feature.get('stationId'));
-        setPopupWeatherStationId(null);
-        popup.setPosition(feature.getGeometry().getCoordinates());
-      } else {
-        setPopupStationId(null);
-        setPopupWeatherStationId(null);
-        popup.setPosition(undefined);
+        setActiveWeatherStation(null);
       }
     });
     Promise.allSettled([loadStations(), loadAssets()]).then((results) => {
@@ -206,8 +208,11 @@ function App() {
         const query = new URLSearchParams({ south: south.toFixed(4), west: west.toFixed(4), north: north.toFixed(4), east: east.toFixed(4) });
         const response = await api(`/api/live/weather-stations?${query}`);
         if (cancelled || sequence !== requestSequence) return;
-        setWeatherStations(response.stations || []);
-        setWeatherStationsStatus(`${response.stations.length} reports in this map view · updated ${dateLabel(response.fetched_at)} UTC`);
+        const reports = response.stations || [];
+        weatherStationsRef.current = reports;
+        setWeatherStations(reports);
+        setActiveWeatherStation((current) => current ? reports.find((station) => station.station_id === current.station_id) || current : null);
+        setWeatherStationsStatus(`${reports.length} reports in this map view · updated ${dateLabel(response.fetched_at)} UTC`);
       } catch (reason) {
         if (!cancelled && sequence === requestSequence) setWeatherStationsStatus(`Live weather station feed unavailable: ${reason.message}`);
       }
@@ -406,11 +411,34 @@ function App() {
     }, kind === 'raster' ? 'Grid processed and stored in object storage.' : 'Observations imported and forecasts refreshed.');
   }
 
+  function toggleStationForm() {
+    const next = !showStationForm;
+    setShowStationForm(next);
+    if (!next) {
+      stationLocationPickRef.current = false;
+      setPickStationLocation(false);
+    }
+  }
+
+  function startStationLocationPick() {
+    setMeasureMode(null);
+    stationLocationPickRef.current = true;
+    setPickStationLocation(true);
+  }
+
+  function cancelStationLocationPick() {
+    stationLocationPickRef.current = false;
+    setPickStationLocation(false);
+  }
+
   async function createStation(event) {
     event.preventDefault(); const formElement = event.currentTarget; const form = new FormData(formElement);
     await withBusy(async () => {
-      await api('/api/stations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(form)) }, token);
-      await loadStations(); setShowStationForm(false); formElement.reset();
+      const station = Object.fromEntries(form);
+      await api('/api/stations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(station) }, token);
+      await loadStations(); setSelectedId(station.id); setActiveWeatherStation(null);
+      mapObject.current?.getView().animate({ center: fromLonLat([Number(station.longitude), Number(station.latitude)]), zoom: Math.max(mapObject.current?.getView().getZoom() || 5, 7), duration: 450 });
+      setShowStationForm(false); setNewStationCoordinates({ latitude: '', longitude: '' }); cancelStationLocationPick(); formElement.reset();
     }, 'Monitoring station added.');
   }
 
@@ -443,12 +471,12 @@ function App() {
       <aside className="sidebar">
         <div className="eyebrow">NETWORK OVERVIEW <span>●</span></div>
         <div className="network-summary"><div><strong>{stations.length.toString().padStart(2, '0')}</strong><small>REGISTERED SITES</small></div><div className="summary-separator" /><div><strong className={alertCount ? 'alert-number' : ''}>{alertCount.toString().padStart(2, '0')}</strong><small>SENSOR ALERTS</small></div></div>
-        <div className="section-heading"><span>Monitoring stations</span><button className="icon-button" title="Add station" onClick={() => setShowStationForm((value) => !value)}>＋</button></div>
-        <div className="station-list">{stations.map((station) => { const weather = stationWeather[station.id]; return <button className={`station-card ${station.id === selectedId ? 'selected' : ''}`} key={station.id} onClick={() => setSelectedId(station.id)}>
+        <div className="section-heading"><span>Monitoring stations</span><button className="icon-button" title="Add station" onClick={toggleStationForm}>＋</button></div>
+        <div className="station-list">{stations.map((station) => { const weather = stationWeather[station.id]; return <button className={`station-card ${station.id === selectedId ? 'selected' : ''}`} key={station.id} onClick={() => { setSelectedId(station.id); setActiveWeatherStation(null); }}>
           <span className={`status-pin ${station.is_demo_data ? 'sample' : station.status}`} /><span className="station-info"><strong>{station.name}</strong><small>{station.river} River <span>·</span> {weather ? `${weather.temperature_c?.toFixed(0) ?? '—'}°C · rain ${weather.precipitation_mm?.toFixed(1) ?? '—'} mm` : 'Loading live weather…'}</small></span><span className="station-flow"><b>{fmt.format(station.current_discharge_m3s)}</b><small>{station.is_demo_data ? 'DEMO · ' : ''}m³/s</small></span>
         </button>; })}</div><div className="station-feed-status">{stationWeatherStatus}</div>
-        <div className="weather-station-section"><div className="section-heading"><span>Live weather stations</span><span className="layer-count">{weatherStations.length} METAR</span></div><div className="station-feed-status">{weatherStationsStatus}</div>{weatherStations.slice(0, 6).map((weatherStation) => <button className="weather-station-row" key={weatherStation.station_id} onClick={() => { const map = mapObject.current; if (map) map.getView().animate({ center: fromLonLat([weatherStation.longitude, weatherStation.latitude]), zoom: Math.max(map.getView().getZoom() || 5, 7), duration: 450 }); }}><span className="weather-station-pin" /><span><b>{weatherStation.name}</b><small>{weatherStation.station_id} · {weatherStation.valid_at ? dateLabel(weatherStation.valid_at) + ' UTC' : 'time unavailable'}</small></span><strong>{weatherStation.temperature_c == null ? '—' : `${weatherStation.temperature_c}°C`}</strong></button>)}{!weatherStations.length && <div className="weather-station-empty">No current METAR reports in this map view.</div>}</div>
-        {showStationForm && <form className="inline-form" onSubmit={createStation}><div className="form-title">Add a monitoring site</div><input name="id" placeholder="station-id (lowercase)" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" /><input name="name" placeholder="Station name" required /><input name="river" placeholder="River" required /><div className="form-row"><input name="latitude" type="number" step="any" placeholder="Latitude" required /><input name="longitude" type="number" step="any" placeholder="Longitude" required /></div><input name="alert_level_m3s" type="number" min="1" placeholder="Alert threshold (m³/s)" required /><button className="primary-button" disabled={busy}>Save station</button></form>}
+        <div className="weather-station-section"><div className="section-heading"><span>Live weather stations</span><span className="layer-count">{weatherStations.length} METAR</span></div><div className="station-feed-status">{weatherStationsStatus}</div>{weatherStations.slice(0, 6).map((weatherStation) => <button className="weather-station-row" key={weatherStation.station_id} onClick={() => { setActiveWeatherStation(weatherStation); const map = mapObject.current; if (map) map.getView().animate({ center: fromLonLat([weatherStation.longitude, weatherStation.latitude]), zoom: Math.max(map.getView().getZoom() || 5, 7), duration: 450 }); }}><span className="weather-station-pin" /><span><b>{weatherStation.name}</b><small>{weatherStation.station_id} · {weatherStation.valid_at ? dateLabel(weatherStation.valid_at) + ' UTC' : 'time unavailable'}</small></span><strong>{weatherStation.temperature_c == null ? '—' : `${weatherStation.temperature_c}°C`}</strong></button>)}{!weatherStations.length && <div className="weather-station-empty">No current METAR reports in this map view.</div>}</div>
+        {showStationForm && <form className="inline-form" onSubmit={createStation}><div className="form-title">Add a monitoring site</div><button type="button" className="pick-location-button" onClick={startStationLocationPick}>Pick location on map</button><input name="id" placeholder="station-id (lowercase)" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" /><input name="name" placeholder="Station name" required /><input name="river" placeholder="River" required /><div className="form-row"><input name="latitude" type="number" min="-90" max="90" step="any" placeholder="Latitude" value={newStationCoordinates.latitude} onChange={(event) => setNewStationCoordinates((current) => ({ ...current, latitude: event.target.value }))} required /><input name="longitude" type="number" min="-180" max="180" step="any" placeholder="Longitude" value={newStationCoordinates.longitude} onChange={(event) => setNewStationCoordinates((current) => ({ ...current, longitude: event.target.value }))} required /></div><input name="alert_level_m3s" type="number" min="1" placeholder="Alert threshold (m³/s)" required /><button className="primary-button" disabled={busy}>Save station</button></form>}
         <div className="sidebar-bottom"><div className="section-heading"><span>Data layers</span><span className="layer-count">{rasters.length} GRID{rasters.length === 1 ? '' : 'S'}</span></div>
           <label className="upload-row"><span className="upload-icon">↥</span><span><b>Import observations</b><small>CSV or JSON · up to 5,000 rows</small></span><input type="file" accept=".csv,.json" onChange={(event) => uploadFile(event.target.files?.[0], 'observations')} /></label>
           <label className="upload-row"><span className="upload-icon">▧</span><span><b>Upload raster or grid</b><small>GeoTIFF · NetCDF · GRIB</small></span><input type="file" accept=".tif,.tiff,.nc,.grib,.grb,.grb2" onChange={(event) => uploadFile(event.target.files?.[0], 'raster')} /></label>
@@ -457,19 +485,19 @@ function App() {
       </aside>
       <section className="map-panel">
         <div className="map-toolbar"><div><span className="map-title">River network</span><span className="map-subtitle">LIVE WEATHER · CYCLONE LAYERS</span></div><div className="map-actions"><button className="map-action" onClick={() => mapObject.current?.getView().animate({ center: fromLonLat([84.4, 22.8]), zoom: 5, duration: 500 })}>◎ <span>Overview</span></button><button className="map-action" onClick={locateUser} title="Center map on your location">⌖ <span>My location</span></button><button className={`map-action ${measureMode === 'LineString' ? 'active' : ''}`} aria-pressed={measureMode === 'LineString'} onClick={() => setMeasureMode((mode) => mode === 'LineString' ? null : 'LineString')}>↗ <span>Distance</span></button><button className={`map-action ${measureMode === 'Polygon' ? 'active' : ''}`} aria-pressed={measureMode === 'Polygon'} onClick={() => setMeasureMode((mode) => mode === 'Polygon' ? null : 'Polygon')}>▱ <span>Area</span></button><button className="map-action" onClick={() => { measureSource.current?.clear(); setLastMeasurement(''); }}>× <span>Clear measure</span></button><button className={`map-action ${liveLayers.rainfall ? 'active' : ''}`} aria-pressed={liveLayers.rainfall} onClick={() => setLiveLayers((state) => ({ ...state, rainfall: !state.rainfall }))}>🌧 <span>Rain heat</span></button><button className={`map-action ${liveLayers.radar ? 'active' : ''}`} aria-pressed={liveLayers.radar} onClick={() => setLiveLayers((state) => ({ ...state, radar: !state.radar }))}>▧ <span>Radar</span></button><button className={`map-action ${liveLayers.cyclones ? 'active' : ''}`} aria-pressed={liveLayers.cyclones} onClick={() => setLiveLayers((state) => ({ ...state, cyclones: !state.cyclones }))}>🌀 <span>Cyclones</span></button><button className="map-action" onClick={() => setActiveRasters(Object.fromEntries(rasters.map((asset) => [asset.id, true])))}>▤ <span>Show grids</span></button></div></div>
-        <div className="map-canvas" ref={mapElement}><div className="map-legend"><b>MAP LAYERS</b><span><i className="weather-legend metar-legend" /> Live METAR observation</span>{liveLayers.rainfall && <span><i className="weather-legend rainfall-legend" /> Rainfall · model</span>}{liveLayers.radar && <span><i className="weather-legend radar-legend" /> Recent radar</span>}{liveLayers.cyclones && <span><i className="weather-legend cyclone-legend" /> Cyclone alerts</span>}<span><i className="normal" /> Normal station</span><span><i className="watch" /> Watch station</span><span><i className="warning" /> Warning station</span><span><i className="weather-legend sample-legend" /> Sample flow</span><small>© OpenStreetMap · weather observations: Aviation Weather Center METAR</small></div><div className="scale-pill">{selected ? `${selected.latitude.toFixed(2)}° N  ·  ${selected.longitude.toFixed(2)}° E` : 'Map loading'}</div>{measureMode && <div className="measure-hint" role="status">{measureMode === 'LineString' ? 'Distance' : 'Area'}: click map points, then double-click to finish{lastMeasurement ? ` · Result: ${lastMeasurement}` : ''}<button type="button" onClick={() => setMeasureMode(null)}>Done</button></div>}<div className="station-map-popup" ref={popupElement} onClick={(event) => event.stopPropagation()}>{popupWeatherStation ? <><button className="popup-close" aria-label="Close weather station popup" onClick={() => { setPopupWeatherStationId(null); popupOverlay.current?.setPosition(undefined); }}>×</button><b>{popupWeatherStation.name}</b><small>Live weather observation · {popupWeatherStation.station_id}</small><p>{popupWeatherStation.temperature_c == null ? "Temperature unavailable" : `${popupWeatherStation.temperature_c}°C`}{popupWeatherStation.dew_point_c == null ? "" : ` · dew point ${popupWeatherStation.dew_point_c}°C`}</p><p>{popupWeatherStation.wind_speed_kmh == null ? "Wind unavailable" : `Wind ${popupWeatherStation.wind_speed_kmh.toFixed(0)} km/h`}{popupWeatherStation.wind_direction_degrees == null ? "" : ` from ${popupWeatherStation.wind_direction_degrees}°`}{popupWeatherStation.wind_gust_kmh == null ? "" : ` · gust ${popupWeatherStation.wind_gust_kmh.toFixed(0)} km/h`}</p><p>{popupWeatherStation.weather || popupWeatherStation.flight_category || "No significant weather reported"}</p><small>{popupWeatherStation.valid_at ? dateLabel(popupWeatherStation.valid_at) + " UTC" : "Observation time unavailable"} · <a href="https://aviationweather.gov/data/api/" target="_blank" rel="noreferrer">Aviation Weather Center</a></small>{popupWeatherStation.raw_report && <small>{popupWeatherStation.raw_report}</small>}</> : popupStation && <><button className="popup-close" aria-label="Close station popup" onClick={() => { setPopupStationId(null); popupOverlay.current?.setPosition(undefined); }}>×</button><b>{popupStation.name}</b><small>{popupStation.river} River gauge</small><p>{fmt.format(popupStation.current_discharge_m3s)} m³/s <span>{popupStation.is_demo_data ? 'sample flow' : 'observed flow'}</span></p><p>{popupWeather ? `${popupWeather.temperature_c?.toFixed(1) ?? '—'}°C · rain ${popupWeather.precipitation_mm?.toFixed(1) ?? '—'} mm · wind ${popupWeather.wind_speed_kmh?.toFixed(0) ?? '—'} km/h` : 'Loading live weather…'}</p><small>Model weather: Open-Meteo · {popupWeather?.valid_at || 'updating'}</small></>}</div></div>
+        <div className={`map-canvas ${pickStationLocation ? "location-picking" : ""}`} ref={mapElement}>{pickStationLocation && <div className="pick-hint" role="status">Click the map to set the coordinates<button type="button" onClick={cancelStationLocationPick}>Cancel</button></div>}<div className="map-legend"><b>MAP LAYERS</b><span><i className="weather-legend metar-legend" /> Live METAR observation</span>{liveLayers.rainfall && <span><i className="weather-legend rainfall-legend" /> Rainfall · model</span>}{liveLayers.radar && <span><i className="weather-legend radar-legend" /> Recent radar</span>}{liveLayers.cyclones && <span><i className="weather-legend cyclone-legend" /> Cyclone alerts</span>}<span><i className="normal" /> Normal station</span><span><i className="watch" /> Watch station</span><span><i className="warning" /> Warning station</span><span><i className="weather-legend sample-legend" /> Sample flow</span><small>© OpenStreetMap · weather observations: Aviation Weather Center METAR</small></div><div className="scale-pill">{selected ? `${selected.latitude.toFixed(2)}° N  ·  ${selected.longitude.toFixed(2)}° E` : 'Map loading'}</div>{measureMode && <div className="measure-hint" role="status">{measureMode === 'LineString' ? 'Distance' : 'Area'}: click map points, then double-click to finish{lastMeasurement ? ` · Result: ${lastMeasurement}` : ''}<button type="button" onClick={() => setMeasureMode(null)}>Done</button></div>}</div>
         <div className="map-footer"><span><i className="live-dot" /> {liveLayers.radar ? liveMeta.radar || 'Loading radar…' : liveLayers.rainfall ? liveMeta.rainfall || 'Loading rainfall…' : liveLayers.cyclones ? liveMeta.cyclones || 'Loading cyclone alerts…' : 'Live overlays are off'}</span><span>{liveLayers.cyclones && 'GDACS · '}{liveLayers.rainfall && 'Open-Meteo · '}{liveLayers.radar && <a href="https://www.rainviewer.com/" target="_blank" rel="noreferrer">RainViewer · </a>}Basemap · OpenStreetMap</span></div>
       </section>
       <aside className="detail-panel">
-        <div className="detail-header"><div className="eyebrow">SITE INTELLIGENCE</div><span className={`status-badge ${selected?.is_demo_data ? 'demo' : selected?.status || 'normal'}`}><i />{selected?.is_demo_data ? 'sample' : selected?.status || 'normal'}</span></div>
-        {selected ? <>
+        <div className="detail-header"><div className="eyebrow">SITE INTELLIGENCE{activeWeatherStation ? ` · ${activeWeatherStation.station_id}` : ''}</div><span className={`status-badge ${activeWeatherStation ? 'live' : selected?.is_demo_data ? 'demo' : selected?.status || 'normal'}`}><i />{activeWeatherStation ? 'live observation' : selected?.is_demo_data ? 'sample' : selected?.status || 'normal'}</span></div>
+        {activeWeatherStation ? <WeatherStationDetails station={activeWeatherStation} /> : selected ? <>
           <div className="site-title"><h1>{selected.name}</h1><p>{selected.river} River <span>·</span> Gauge station</p></div>
           <div className="flow-card"><div className="flow-card-top"><span>LATEST RIVER FLOW</span><span className={selected.is_demo_data ? 'sample-label' : ''}>{selected.is_demo_data ? 'DEMO SAMPLE' : 'OBSERVATION'}</span></div><div className="flow-value">{fmt.format(selected.current_discharge_m3s)}<small>m³/s</small></div><div className="flow-track"><i style={{ width: `${Math.min(100, selected.current_discharge_m3s / selected.alert_level_m3s * 100)}%`, background: colors[selected.status] }} /></div><div className="flow-range"><span>0</span><span>Alert threshold <b>{fmt.format(selected.alert_level_m3s)} m³/s</b></span></div></div>
           <div className="metadata-grid"><div><small>LAST OBSERVED</small><b>{lastUpdate}</b></div><div><small>MODEL WEATHER · OPEN-METEO</small><b>{selectedWeather ? `${selectedWeather.temperature_c?.toFixed(1) ?? '—'}°C · rain ${selectedWeather.precipitation_mm?.toFixed(1) ?? '—'} mm` : 'Loading…'}</b></div><div><small>WIND · VALID UTC</small><b>{selectedWeather ? `${selectedWeather.wind_speed_kmh?.toFixed(0) ?? '—'} km/h · ${selectedWeather.valid_at || '—'}` : stationWeatherStatus}</b></div><div><small>FORECAST MODEL</small><b>{forecast?.model_name || 'Loading…'}</b></div><div><small>FORECAST WINDOW</small><b>48 hours</b></div><div><small>FLOW DATA PROVENANCE</small><b>{selected.is_demo_data ? 'Illustrative sample' : 'Station observations'}</b></div></div>
           <div className="chart-section"><div className="chart-heading"><div><b>Discharge outlook</b><small>Observed & forecast · m³/s</small></div><button className="run-button" disabled={busy} onClick={runForecast}>↻ Run forecast</button></div><div className="chart-legend"><span><i className="legend-observed" /> Observed</span><span><i className="legend-forecast" /> Forecast</span></div><RiverChart observed={chartObserved} forecast={combinedForecast} /><div className="forecast-timeline"><label>VALID TIME <b>{activeForecastPoint ? dateLabel(activeForecastPoint.valid_at) + ' UTC' : 'Loading forecast'}</b></label><input aria-label="Forecast time step" type="range" min="0" max={Math.max(0, combinedForecast.length - 1)} value={Math.min(forecastStep, Math.max(0, combinedForecast.length - 1))} disabled={!combinedForecast.length} onChange={(event) => setForecastStep(Number(event.target.value))} /><strong>{activeForecastPoint ? `${fmt.format(activeForecastPoint.discharge_m3s)} m³/s` : '—'}</strong></div></div>
           <div className="forecast-note"><span>ⓘ</span><p>{forecast?.is_demo_data ? 'Baseline forecast is illustrative and uncalibrated. Do not use for emergency decisions.' : 'Model outputs require local validation before operational use.'}</p></div>
         </> : <div className="empty-site">Waiting for station data…</div>}
-        <div className="run-history"><div className="section-heading"><b>Recent model runs</b><span className="layer-count">{runs.length} RUNS</span></div>{runs.slice(0, 4).map((run) => <div className="run-row" key={run.id}><span className={`run-ok ${run.status === 'failed' ? 'run-failed' : ''}`} title={run.error_message || undefined}>{run.status === 'failed' ? '!' : '✓'}</span><span><b>{run.station_name}</b><small>{run.model_name} · {dateLabel(run.generated_at)} UTC</small>{run.error_message && <small className="run-error" title={run.error_message}>{run.error_message}</small>}</span><small className={`run-status ${run.status === 'failed' ? 'failed' : ''}`}>{run.status}</small></div>)}</div>
+        {!activeWeatherStation && <div className="run-history"><div className="section-heading"><b>Recent model runs</b><span className="layer-count">{runs.length} RUNS</span></div>{runs.slice(0, 4).map((run) => <div className="run-row" key={run.id}><span className={`run-ok ${run.status === 'failed' ? 'run-failed' : ''}`} title={run.error_message || undefined}>{run.status === 'failed' ? '!' : '✓'}</span><span><b>{run.station_name}</b><small>{run.model_name} · {dateLabel(run.generated_at)} UTC</small>{run.error_message && <small className="run-error" title={run.error_message}>{run.error_message}</small>}</span><small className={`run-status ${run.status === 'failed' ? 'failed' : ''}`}>{run.status}</small></div>)}</div>}
       </aside>
     </main>
     <footer className="bottom-bar"><div>RIVERCAST <span>·</span> LOCAL FORECASTING PLATFORM</div><div><label>Write token <input aria-label="API write token" type="password" value={token} onChange={(event) => saveToken(event.target.value)} placeholder={health?.write_auth_enabled ? 'Required for edits' : 'Optional'} /></label><span className="footer-divider" /> <span>PostGIS</span><span className="footer-dot" /><span>MinIO</span><span className="footer-dot" /><span>FastAPI</span></div></footer>
