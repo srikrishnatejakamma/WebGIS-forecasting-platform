@@ -25,6 +25,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from .database import SessionLocal, get_session, initialize_database
 from .forecasting import create_forecast_run, create_forecast_run_tracked
+from .live_data import cyclone_events, provider_error, radar_frames, rainfall_grid
 from .models import ForecastRunRecord, GriddedAssetRecord, ObservationRecord, StationRecord
 from .processing import convert_to_cog
 from .storage import ensure_bucket, upload as upload_object
@@ -193,6 +194,33 @@ def health(session: Session = Depends(get_session)) -> dict[str, str | bool]:
 @app.get("/health", include_in_schema=False)
 def root_health(session: Session = Depends(get_session)) -> dict[str, str | bool]:
     return health(session)
+
+
+@app.get("/api/live/rainfall")
+def live_rainfall() -> dict:
+    try:
+        return rainfall_grid()
+    except Exception as exc:
+        logger.warning("Could not load live rainfall grid: %s", exc)
+        raise HTTPException(status_code=503, detail=provider_error(exc)) from exc
+
+
+@app.get("/api/live/radar")
+def live_radar() -> dict:
+    try:
+        return radar_frames()
+    except Exception as exc:
+        logger.warning("Could not load live precipitation radar: %s", exc)
+        raise HTTPException(status_code=503, detail=provider_error(exc)) from exc
+
+
+@app.get("/api/live/cyclones")
+def live_cyclones() -> dict:
+    try:
+        return cyclone_events()
+    except Exception as exc:
+        logger.warning("Could not load live cyclone events: %s", exc)
+        raise HTTPException(status_code=503, detail=provider_error(exc)) from exc
 
 
 def _latest_observation(session: Session, station_id: str) -> ObservationRecord | None:

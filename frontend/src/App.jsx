@@ -3,9 +3,11 @@ import Map from 'ol/Map.js';
 import View from 'ol/View.js';
 import TileLayer from 'ol/layer/Tile.js';
 import VectorLayer from 'ol/layer/Vector.js';
+import Heatmap from 'ol/layer/Heatmap.js';
 import OSM from 'ol/source/OSM.js';
 import XYZ from 'ol/source/XYZ.js';
 import VectorSource from 'ol/source/Vector.js';
+import GeoJSON from 'ol/format/GeoJSON.js';
 import Feature from 'ol/Feature.js';
 import Point from 'ol/geom/Point.js';
 import { fromLonLat } from 'ol/proj.js';
@@ -51,6 +53,7 @@ function App() {
   const mapObject = useRef(null);
   const stationLayer = useRef(null);
   const rasterLayers = useRef([]);
+  const liveLayerRefs = useRef({});
   const [stations, setStations] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [observations, setObservations] = useState([]);
@@ -65,6 +68,8 @@ function App() {
   const [error, setError] = useState('');
   const [showStationForm, setShowStationForm] = useState(false);
   const [forecastStep, setForecastStep] = useState(0);
+  const [liveLayers, setLiveLayers] = useState({ rainfall: false, radar: false, cyclones: false });
+  const [liveMeta, setLiveMeta] = useState({});
 
   const selected = stations.find((station) => station.id === selectedId) || stations[0];
   const loadStations = useCallback(async () => {
@@ -125,6 +130,111 @@ function App() {
       rasterLayers.current.push(layer);
     });
   }, [rasters, activeRasters]);
+
+  useEffect(() => {
+    if (!mapObject.current) return undefined;
+    let cancelled = false;
+    let timer;
+    const key = 'rainfall';
+    const existing = liveLayerRefs.current[key];
+    if (!liveLayers.rainfall) {
+      if (existing) mapObject.current.removeLayer(existing);
+      liveLayerRefs.current[key] = null;
+      return undefined;
+    }
+    const refresh = async () => {
+      try {
+        const data = await api('/api/live/rainfall');
+        if (cancelled) return;
+        const source = new VectorSource();
+        data.features.forEach((item) => {
+          const feature = new Feature({ geometry: new Point(fromLonLat(item.geometry.coordinates)), weight: item.properties.weight });
+          feature.setProperties(item.properties);
+          source.addFeature(feature);
+        });
+        if (!liveLayerRefs.current[key]) {
+          const layer = new Heatmap({ source, blur: 36, radius: 25, weight: 'weight', gradient: ['#fff7bc', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04'] });
+          liveLayerRefs.current[key] = layer;
+          mapObject.current.getLayers().insertAt(Math.max(1, mapObject.current.getLayers().getLength() - 1), layer);
+        } else liveLayerRefs.current[key].setSource(source);
+        setLiveMeta((state) => ({ ...state, rainfall: `${data.layer} · ${data.valid_at || 'updated'} UTC` }));
+      } catch (reason) {
+        if (!cancelled) setLiveMeta((state) => ({ ...state, rainfall: `Unavailable: ${reason.message}` }));
+      }
+    };
+    refresh();
+    timer = window.setInterval(refresh, 30 * 60 * 1000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [liveLayers.rainfall]);
+
+  useEffect(() => {
+    if (!mapObject.current) return undefined;
+    let cancelled = false;
+    let timer;
+    const key = 'radar';
+    const existing = liveLayerRefs.current[key];
+    if (!liveLayers.radar) {
+      if (existing) mapObject.current.removeLayer(existing);
+      liveLayerRefs.current[key] = null;
+      return undefined;
+    }
+    const refresh = async () => {
+      try {
+        const data = await api('/api/live/radar');
+        if (cancelled) return;
+        if (!liveLayerRefs.current[key]) {
+          const layer = new TileLayer({ source: new XYZ({ url: data.tile_url, maxZoom: 7, crossOrigin: 'anonymous' }), opacity: .72 });
+          liveLayerRefs.current[key] = layer;
+          mapObject.current.getLayers().insertAt(Math.max(1, mapObject.current.getLayers().getLength() - 1), layer);
+        } else liveLayerRefs.current[key].getSource().setUrl(data.tile_url);
+        setLiveMeta((state) => ({ ...state, radar: `RainViewer radar · ${dateLabel(data.latest_at)} UTC` }));
+      } catch (reason) {
+        if (!cancelled) setLiveMeta((state) => ({ ...state, radar: `Unavailable: ${reason.message}` }));
+      }
+    };
+    refresh();
+    timer = window.setInterval(refresh, 5 * 60 * 1000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [liveLayers.radar]);
+
+  useEffect(() => {
+    if (!mapObject.current) return undefined;
+    let cancelled = false;
+    let timer;
+    const key = 'cyclones';
+    const existing = liveLayerRefs.current[key];
+    if (!liveLayers.cyclones) {
+      if (existing) mapObject.current.removeLayer(existing);
+      liveLayerRefs.current[key] = null;
+      return undefined;
+    }
+    const refresh = async () => {
+      try {
+        const data = await api('/api/live/cyclones');
+        if (cancelled) return;
+        const source = new VectorSource({ features: new GeoJSON().readFeatures(data, { dataProjection: 'EPSG:4326', featureProjection: 'EPSG:3857' }) });
+        if (!liveLayerRefs.current[key]) {
+          const layer = new VectorLayer({ source, style: (feature) => {
+            const level = String(feature.get('alertlevel') || feature.get('alertLevel') || 'green').toLowerCase();
+            const color = level === 'red' ? '#cb443c' : level === 'orange' ? '#e58b32' : '#d7b13d';
+            const geometry = feature.getGeometry();
+            const styles = [new Style({ stroke: new Stroke({ color, width: 3 }), fill: new Fill({ color: `${color}30` }), image: new CircleStyle({ radius: 8, fill: new Fill({ color }), stroke: new Stroke({ color: '#fff', width: 2 }) }) })];
+            if (geometry?.getType() === 'Point') styles[0].setText(new Text({ text: String(feature.get('eventname') || feature.get('name') || 'Cyclone'), offsetY: -16, font: '600 11px sans-serif', fill: new Fill({ color: '#7c322b' }), backgroundFill: new Fill({ color: '#ffffffdd' }), padding: [2, 4, 2, 4] }));
+            return styles;
+          } });
+          liveLayerRefs.current[key] = layer;
+          mapObject.current.getLayers().insertAt(Math.max(1, mapObject.current.getLayers().getLength() - 1), layer);
+        } else liveLayerRefs.current[key].setSource(source);
+        const eventCount = new Set(source.getFeatures().map((feature) => feature.get('eventid')).filter(Boolean)).size;
+        setLiveMeta((state) => ({ ...state, cyclones: `GDACS · ${eventCount} current cyclones · ${dateLabel(data.fetched_at)} UTC` }));
+      } catch (reason) {
+        if (!cancelled) setLiveMeta((state) => ({ ...state, cyclones: `Unavailable: ${reason.message}` }));
+      }
+    };
+    refresh();
+    timer = window.setInterval(refresh, 15 * 60 * 1000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [liveLayers.cyclones]);
 
   useEffect(() => {
     if (!selected || !mapObject.current) return;
@@ -188,9 +298,9 @@ function App() {
         </div>
       </aside>
       <section className="map-panel">
-        <div className="map-toolbar"><div><span className="map-title">River network</span><span className="map-subtitle">LIVE GAUGES · FORECAST COVERAGE</span></div><div className="map-actions"><button className="map-action" onClick={() => mapObject.current?.getView().animate({ center: fromLonLat([84.4, 22.8]), zoom: 5, duration: 500 })}>◎ <span>Overview</span></button><button className="map-action" onClick={() => setActiveRasters(Object.fromEntries(rasters.map((asset) => [asset.id, true])))}>▧ <span>Show grids</span></button></div></div>
-        <div className="map-canvas" ref={mapElement}><div className="map-legend"><b>STATION STATUS</b><span><i className="normal" /> Normal</span><span><i className="watch" /> Watch</span><span><i className="warning" /> Warning</span><small>© OpenStreetMap contributors</small></div><div className="scale-pill">{selected ? `${selected.latitude.toFixed(2)}° N  ·  ${selected.longitude.toFixed(2)}° E` : 'Map loading'}</div></div>
-        <div className="map-footer"><span><i className="live-dot" /> Automatic refresh every 6 hours</span><span>Basemap · OpenStreetMap</span></div>
+        <div className="map-toolbar"><div><span className="map-title">River network</span><span className="map-subtitle">LIVE WEATHER · CYCLONE LAYERS</span></div><div className="map-actions"><button className="map-action" onClick={() => mapObject.current?.getView().animate({ center: fromLonLat([84.4, 22.8]), zoom: 5, duration: 500 })}>◎ <span>Overview</span></button><button className={`map-action ${liveLayers.rainfall ? 'active' : ''}`} aria-pressed={liveLayers.rainfall} onClick={() => setLiveLayers((state) => ({ ...state, rainfall: !state.rainfall }))}>🌧 <span>Rain heat</span></button><button className={`map-action ${liveLayers.radar ? 'active' : ''}`} aria-pressed={liveLayers.radar} onClick={() => setLiveLayers((state) => ({ ...state, radar: !state.radar }))}>▧ <span>Radar</span></button><button className={`map-action ${liveLayers.cyclones ? 'active' : ''}`} aria-pressed={liveLayers.cyclones} onClick={() => setLiveLayers((state) => ({ ...state, cyclones: !state.cyclones }))}>🌀 <span>Cyclones</span></button><button className="map-action" onClick={() => setActiveRasters(Object.fromEntries(rasters.map((asset) => [asset.id, true])))}>▤ <span>Show grids</span></button></div></div>
+        <div className="map-canvas" ref={mapElement}><div className="map-legend"><b>MAP LAYERS</b>{liveLayers.rainfall && <span><i className="weather-legend rainfall-legend" /> Rainfall · model</span>}{liveLayers.radar && <span><i className="weather-legend radar-legend" /> Recent radar</span>}{liveLayers.cyclones && <span><i className="weather-legend cyclone-legend" /> Cyclone alerts</span>}<span><i className="normal" /> Normal station</span><span><i className="watch" /> Watch station</span><span><i className="warning" /> Warning station</span><small>© OpenStreetMap · Weather by RainViewer</small></div><div className="scale-pill">{selected ? `${selected.latitude.toFixed(2)}° N  ·  ${selected.longitude.toFixed(2)}° E` : 'Map loading'}</div></div>
+        <div className="map-footer"><span><i className="live-dot" /> {liveLayers.radar ? liveMeta.radar || 'Loading radar…' : liveLayers.rainfall ? liveMeta.rainfall || 'Loading rainfall…' : liveLayers.cyclones ? liveMeta.cyclones || 'Loading cyclone alerts…' : 'Live overlays are off'}</span><span>{liveLayers.cyclones && 'GDACS · '}{liveLayers.rainfall && 'Open-Meteo · '}{liveLayers.radar && <a href="https://www.rainviewer.com/" target="_blank" rel="noreferrer">RainViewer · </a>}Basemap · OpenStreetMap</span></div>
       </section>
       <aside className="detail-panel">
         <div className="detail-header"><div className="eyebrow">SITE INTELLIGENCE</div><span className={`status-badge ${selected?.status || 'normal'}`}><i />{selected?.status || 'normal'}</span></div>
