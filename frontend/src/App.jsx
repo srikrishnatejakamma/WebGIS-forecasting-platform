@@ -96,6 +96,7 @@ function App() {
   const rasterLayers = useRef([]);
   const liveLayerRefs = useRef({});
   const [stations, setStations] = useState([]);
+  const [stationQuery, setStationQuery] = useState('');
   const [stationWeather, setStationWeather] = useState({});
   const [weatherStations, setWeatherStations] = useState([]);
   const [activeWeatherStation, setActiveWeatherStation] = useState(null);
@@ -128,6 +129,10 @@ function App() {
   const [liveMeta, setLiveMeta] = useState({});
 
   const selected = stations.find((station) => station.id === selectedId) || stations[0];
+  const visibleStations = useMemo(() => {
+    const query = stationQuery.trim().toLocaleLowerCase();
+    return stations.filter((station) => !query || `${station.name} ${station.river} ${station.id}`.toLocaleLowerCase().includes(query));
+  }, [stations, stationQuery]);
   weatherStationsRef.current = weatherStations;
   riverStationsRef.current = riverStations;
   const selectedWeather = selected ? stationWeather[selected.id] : null;
@@ -684,18 +689,22 @@ function App() {
 
   return <div className="app-shell">
     <header className="topbar">
-      <a className="brand" href="/"><span className="brand-mark">R</span><span><strong>RiverCast</strong><small>HYDRO INTELLIGENCE</small></span></a>
-      <div className="topbar-center"><span className="live-dot" /> LIVE MONITORING <span className="topbar-divider">/</span> INDIA RIVER NETWORK</div>
+      <a className="brand" href="/"><span className="brand-mark">R</span><span><strong>RiverCast</strong><small>OBSERVATION & FORECAST CONSOLE</small></span></a>
+      <div className="topbar-center"><span className="live-dot" /> GLOBAL MONITORING <span className="topbar-divider">/</span> HYDROLOGY WORKSPACE</div>
       <div className="topbar-right"><span className="service-state"><i /> {health?.status === 'ok' ? 'Systems operational' : 'Connecting'}</span><a className="docs-link" href="/docs" target="_blank">API docs ↗</a></div>
     </header>
+    <section className="command-strip" aria-label="Network status">
+      <div className="command-title"><span className="command-kicker">OPERATIONS / LIVE NETWORK</span><strong>Earth observation workspace</strong></div>
+      <div className="command-metrics"><div><span>MONITORING SITES</span><b>{stations.length.toString().padStart(2, '0')}</b></div><div><span>LIVE WEATHER</span><b>{weatherStations.length.toString().padStart(2, '0')}</b></div><div><span>RIVER GAUGES</span><b>{riverStations.length.toString().padStart(2, '0')}</b></div><div className={alertCount ? 'metric-alert' : ''}><span>ACTIVE ALERTS</span><b>{alertCount.toString().padStart(2, '0')}</b></div></div>
+      <div className="command-updated"><i className="live-dot" /><span>NETWORK STATUS</span><b>{health?.status === 'ok' ? 'Operational' : 'Connecting'}</b></div>
+    </section>
     <main className="workspace">
       <aside className="sidebar">
-        <div className="eyebrow">NETWORK OVERVIEW <span>●</span></div>
-        <div className="network-summary"><div><strong>{stations.length.toString().padStart(2, '0')}</strong><small>REGISTERED SITES</small></div><div className="summary-separator" /><div><strong className={alertCount ? 'alert-number' : ''}>{alertCount.toString().padStart(2, '0')}</strong><small>SENSOR ALERTS</small></div></div>
-        <div className="section-heading"><span>Monitoring stations</span></div>
-        <div className="station-list">{stations.map((station) => { const weather = stationWeather[station.id]; return <button className={`station-card ${station.id === selectedId ? 'selected' : ''}`} key={station.id} onClick={() => { setSelectedId(station.id); setActiveWeatherStation(null); }}>
+        <div className="sidebar-section-label"><span className="section-index">01</span><span>STATION NETWORK</span><span className="section-live"><i /> LIVE</span></div>
+        <div className="station-tools"><label className="station-search"><span aria-hidden="true">⌕</span><input aria-label="Search monitoring stations" value={stationQuery} onChange={(event) => setStationQuery(event.target.value)} placeholder="Find a station or river" />{stationQuery && <button type="button" aria-label="Clear search" onClick={() => setStationQuery('')}>×</button>}</label><button className="site-add-button station-add" onClick={toggleStationForm} aria-label="Add monitoring site">+</button></div>
+        <div className="station-list">{visibleStations.map((station) => { const weather = stationWeather[station.id]; return <button className={`station-card ${station.id === selectedId ? 'selected' : ''}`} key={station.id} onClick={() => { setSelectedId(station.id); setActiveWeatherStation(null); }}>
           <span className={`status-pin ${station.is_demo_data ? 'sample' : station.status}`} /><span className="station-info"><strong>{station.name}</strong><small>{station.river} River <span>·</span> {weather ? `${weather.temperature_c?.toFixed(0) ?? '—'}°C · rain ${weather.precipitation_mm?.toFixed(1) ?? '—'} mm` : 'Loading live weather…'}</small></span><span className="station-flow"><b>{fmt.format(station.current_discharge_m3s)}</b><small>{station.is_demo_data ? 'DEMO · ' : ''}m³/s</small></span>
-        </button>; })}</div><div className="station-feed-status">{stationWeatherStatus}</div>
+        </button>; })}{!visibleStations.length && <div className="station-empty">No stations match “{stationQuery}”.</div>}</div><div className="station-feed-status">{stationWeatherStatus}</div>
         <div className="weather-station-section"><div className="section-heading"><span>Live weather stations</span><span className="layer-count">{weatherStations.length} METAR</span></div><div className="station-feed-status">{weatherStationsStatus}</div>{weatherStations.slice(0, 6).map((weatherStation) => <button className="weather-station-row" key={weatherStation.station_id} onClick={() => { setActiveWeatherStation(weatherStation); setActiveRiverStation(null); const map = mapObject.current; if (map) map.getView().animate({ center: fromLonLat([weatherStation.longitude, weatherStation.latitude]), zoom: Math.max(map.getView().getZoom() || 5, 7), duration: 450 }); }}><span className="weather-station-pin" /><span><b>{weatherStation.name}</b><small>{weatherStation.station_id} · {weatherStation.valid_at ? dateLabel(weatherStation.valid_at) + ' UTC' : 'time unavailable'}</small></span><strong>{weatherStation.temperature_c == null ? 'N/A' : `${weatherStation.temperature_c}°C`}</strong></button>)}{!weatherStations.length && <div className="weather-station-empty">No current METAR reports in this map view.</div>}</div>
 
         <div className="river-gauge-section"><div className="section-heading"><span>Live river gauges</span><span className="layer-count">{riverStations.length} LIVE</span></div><div className="station-feed-status">{riverStationsStatus}</div>{riverStations.slice(0, 8).map((station) => <button className="river-gauge-row" key={station.station_id} onClick={() => { setActiveRiverStation(station); setActiveWeatherStation(null); setActiveAirQualityStation(null); const map = mapObject.current; if (map) map.getView().animate({ center: fromLonLat([station.longitude, station.latitude]), zoom: Math.max(map.getView().getZoom() || 5, 7), duration: 450 }); }}><span className="river-gauge-pin" /><span><b>{station.name}</b><small>{station.source} / {station.valid_at ? dateLabel(station.valid_at) + ' UTC' : 'time unavailable'}</small></span><strong>{station.discharge_m3s == null ? (station.water_level_m == null ? 'N/A' : `${station.water_level_m} m`) : `${fmt.format(station.discharge_m3s)} m3/s`}</strong></button>)}{!riverStations.length && liveLayers.riverGauges && <div className="weather-station-empty">Pan or zoom to the US, Canada, or England for public gauges.</div>}</div>
