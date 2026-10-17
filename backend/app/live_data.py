@@ -218,9 +218,9 @@ def river_gauge_stations(south: float, west: float, north: float, east: float) -
             except (TypeError, ValueError):
                 continue
             unit = str(properties.get("unit_of_measure") or "ft3/s").lower().replace(" ", "")
-            if unit in {"ft3/s", "ft³/s", "cubicfeetpersecond", "cfs"}:
+            if unit in {"ft3/s", "ft^3/s", "ft³/s", "cubicfeetpersecond", "cfs"}:
                 value *= 0.028316846592
-            elif unit not in {"m3/s", "m³/s", "cms", "cubicmeterspersecond"}:
+            elif unit not in {"m3/s", "m^3/s", "m³/s", "cms", "cubicmeterspersecond"}:
                 continue
             station_id = str(properties.get("monitoring_location_id") or feature.get("id") or "USGS")
             rows.append({
@@ -273,7 +273,7 @@ def river_gauge_stations(south: float, west: float, north: float, east: float) -
                 value /= 86.4
             elif unit in {"l/s", "L/s"}:
                 value /= 1000
-            elif unit not in {"m3/s", "m³/s"}:
+            elif unit not in {"m3/s", "m^3/s", "m³/s"}:
                 continue
             station = measure.get("station") or {}
             station_id = str(measure.get("stationReference") or "")
