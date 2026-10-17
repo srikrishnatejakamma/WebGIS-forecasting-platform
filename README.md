@@ -22,7 +22,7 @@ To stop the stack, run `docker compose down`. To delete local database, object, 
 
 - OpenLayers map with station markers, alert status, OpenStreetMap basemap, and optional raster overlays.
 - Station click popups, browser location centering, and interactive geodesic distance/area measurement tools based on OpenLayers examples.
-- Live map overlays: next-hour precipitation heatmap, recent precipitation radar, GDACS tropical-cyclone alerts, public river gauges, and optional CPCB air-quality stations.
+- Live map overlays: OpenStreetMap river and canal lines, next-hour precipitation heatmap, recent precipitation radar, GDACS tropical-cyclone alerts, public river gauges, and optional CPCB air-quality stations.
 - Station creation and CSV/JSON observation import from the interface.
 - Station-specific current weather from Open-Meteo with a 15-minute refresh; river discharge remains sourced from imported observations or visibly marked demo records.
 - Station history, forecast curves, run status/history, and manual forecast execution.

@@ -371,6 +371,38 @@ def river_gauge_stations(south: float, west: float, north: float, east: float) -
     return _cached(f"river-gauges:{south:.3f}:{west:.3f}:{north:.3f}:{east:.3f}", 900, load)
 
 
+def waterway_lines(south: float, west: float, north: float, east: float) -> dict:
+    """Return OSM river and canal linework for the current map extent."""
+    bounds = (round(south, 2), round(west, 2), round(north, 2), round(east, 2))
+    south, west, north, east = bounds
+    if east <= west:
+        return {"type": "FeatureCollection", "features": [], "source": "OpenStreetMap", "fetched_at": datetime.now(UTC).isoformat()}
+
+    def load() -> dict:
+        query = f"[out:json][timeout:20];way[\"waterway\"~\"^(river|canal)$\"]({south},{west},{north},{east});out geom;"
+        payload = _get_json(f"https://overpass-api.de/api/interpreter?{urlencode({'data': query})}")
+        features = []
+        for element in payload.get("elements", []) if isinstance(payload, dict) else []:
+            geometry = element.get("geometry") or []
+            coordinates = [[point["lon"], point["lat"]] for point in geometry if "lon" in point and "lat" in point]
+            if element.get("type") != "way" or len(coordinates) < 2:
+                continue
+            features.append({
+                "type": "Feature",
+                "id": f"way/{element.get('id')}",
+                "geometry": {"type": "LineString", "coordinates": coordinates},
+                "properties": element.get("tags") or {},
+            })
+        return {
+            "type": "FeatureCollection", "features": features,
+            "source": "OpenStreetMap contributors via Overpass API",
+            "source_url": "https://www.openstreetmap.org/copyright",
+            "fetched_at": datetime.now(UTC).isoformat(),
+        }
+
+    return _cached(f"osm-waterways:{south}:{west}:{north}:{east}", 3600, load)
+
+
 def cpcb_air_quality_stations(south: float, west: float, north: float, east: float) -> dict:
     """Load CPCB's hourly station pollutant readings from India's open-data API."""
     api_key = os.getenv("DATA_GOV_IN_API_KEY", "").strip()

@@ -25,7 +25,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from .database import SessionLocal, get_session, initialize_database
 from .forecasting import create_forecast_run, create_forecast_run_tracked
-from .live_data import cpcb_air_quality_stations, cyclone_events, metar_stations, provider_error, radar_frames, rainfall_grid, river_gauge_stations, station_weather
+from .live_data import cpcb_air_quality_stations, cyclone_events, metar_stations, provider_error, radar_frames, rainfall_grid, river_gauge_stations, station_weather, waterway_lines
 from .models import ForecastRunRecord, GriddedAssetRecord, ObservationRecord, StationRecord
 from .processing import convert_to_cog
 from .storage import ensure_bucket, upload as upload_object
@@ -242,6 +242,24 @@ def live_river_stations(
     if north <= south or (east <= west and not (west > 0 and east < 0)):
         raise HTTPException(status_code=422, detail="Map bounds must have a positive latitude and longitude span")
     return river_gauge_stations(south, west, north, east)
+
+
+@app.get("/api/live/waterways")
+def live_waterways(
+    south: float = Query(-85.0, ge=-90, le=90),
+    west: float = Query(-180.0, ge=-180, le=180),
+    north: float = Query(85.0, ge=-90, le=90),
+    east: float = Query(180.0, ge=-180, le=180),
+) -> dict:
+    if north <= south or east <= west:
+        raise HTTPException(status_code=422, detail="Map bounds must have a positive latitude and longitude span")
+    if (north - south) * (east - west) > 1600:
+        raise HTTPException(status_code=422, detail="Zoom in to view river lines for this area")
+    try:
+        return waterway_lines(south, west, north, east)
+    except Exception as exc:
+        logger.warning("Could not load OpenStreetMap waterways: %s", exc)
+        raise HTTPException(status_code=503, detail=provider_error(exc)) from exc
 
 
 @app.get("/api/live/air-quality-stations")
