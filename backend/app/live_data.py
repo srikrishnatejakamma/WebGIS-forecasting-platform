@@ -8,6 +8,7 @@ import csv
 import gzip
 import io
 import logging
+import os
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -368,6 +369,74 @@ def river_gauge_stations(south: float, west: float, north: float, east: float) -
         }
 
     return _cached(f"river-gauges:{south:.3f}:{west:.3f}:{north:.3f}:{east:.3f}", 900, load)
+
+
+def cpcb_air_quality_stations(south: float, west: float, north: float, east: float) -> dict:
+    """Load CPCB's hourly station pollutant readings from India's open-data API."""
+    api_key = os.getenv("DATA_GOV_IN_API_KEY", "").strip()
+    if not api_key:
+        return {
+            "stations": [], "status": "api_key_required",
+            "message": "Add a free data.gov.in API key as DATA_GOV_IN_API_KEY in .env, then restart Docker.",
+            "source": "CPCB via Open Government Data Platform India",
+            "source_url": "https://www.data.gov.in/resource/real-time-air-quality-index-various-locations",
+        }
+
+    def load() -> dict:
+        resource_id = "3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69"
+        records: list[dict] = []
+        for offset in range(0, 10_000, 1000):
+            query = urlencode({"api-key": api_key, "format": "json", "limit": 1000, "offset": offset})
+            payload = _get_json(f"https://api.data.gov.in/resource/{resource_id}?{query}")
+            page = payload.get("records", []) if isinstance(payload, dict) else []
+            records.extend(page)
+            if len(page) < 1000:
+                break
+
+        grouped: dict[str, dict] = {}
+        for record in records:
+            try:
+                latitude, longitude = float(record["latitude"]), float(record["longitude"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (south <= latitude <= north and (west <= longitude <= east if west <= east else longitude >= west or longitude <= east)):
+                continue
+            state = str(record.get("state") or "")
+            city = str(record.get("city") or "")
+            name = str(record.get("station") or city or "CPCB station")
+            station_key = "|".join((state, city, name)).casefold()
+            station_id = "CPCB-" + hashlib.sha1(station_key.encode("utf-8")).hexdigest()[:12]
+            station = grouped.setdefault(station_id, {
+                "station_id": station_id, "name": name, "city": city.replace("_", " "),
+                "state": state.replace("_", " "), "latitude": latitude, "longitude": longitude,
+                "pollutants": {}, "source": "CPCB", "source_url": "https://www.data.gov.in/resource/real-time-air-quality-index-various-locations",
+            })
+            pollutant = str(record.get("pollutant_id") or "").strip().upper()
+            try:
+                average = float(record["pollutant_avg"]) if record.get("pollutant_avg") not in (None, "", "NA", "Null") else None
+                minimum = float(record["pollutant_min"]) if record.get("pollutant_min") not in (None, "", "NA", "Null") else None
+                maximum = float(record["pollutant_max"]) if record.get("pollutant_max") not in (None, "", "NA", "Null") else None
+            except (TypeError, ValueError):
+                average, minimum, maximum = None, None, None
+            reading = {
+                "average": average, "minimum": minimum, "maximum": maximum,
+                "valid_at": record.get("last_update"),
+            }
+            previous = station["pollutants"].get(pollutant)
+            if previous is None or str(reading["valid_at"] or "") > str(previous["valid_at"] or ""):
+                station["pollutants"][pollutant] = reading
+            if reading["valid_at"] and (not station.get("valid_at") or reading["valid_at"] > station["valid_at"]):
+                station["valid_at"] = reading["valid_at"]
+
+        stations = sorted(grouped.values(), key=lambda station: (station["state"], station["city"], station["name"]))
+        return {
+            "stations": stations, "status": "ok", "source": "CPCB via Open Government Data Platform India",
+            "source_url": "https://www.data.gov.in/resource/real-time-air-quality-index-various-locations",
+            "fetched_at": datetime.now(UTC).isoformat(),
+        }
+
+    bounds_key = f"{south:.3f}:{west:.3f}:{north:.3f}:{east:.3f}"
+    return _cached(f"cpcb-air-quality:{hashlib.sha1(api_key.encode()).hexdigest()}:{bounds_key}", 900, load)
 
 
 def radar_frames() -> dict:

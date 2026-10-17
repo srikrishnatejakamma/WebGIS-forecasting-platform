@@ -39,6 +39,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-password123}
       MINIO_BUCKET: ${MINIO_BUCKET:-forecast-data}
       API_WRITE_TOKEN: ${API_WRITE_TOKEN:-}
+      DATA_GOV_IN_API_KEY: ${DATA_GOV_IN_API_KEY:-}
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:

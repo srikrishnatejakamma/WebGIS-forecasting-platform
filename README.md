@@ -14,13 +14,15 @@ docker compose up --build -d
 
 Open the frontend at <http://localhost:3000>. The API and Swagger docs are at <http://localhost:8000> and <http://localhost:8000/docs>. MinIO's console is at <http://localhost:9001> (local example credentials: `admin` / `password123`). PostgreSQL/PostGIS is exposed at `localhost:5432`. Compose persists database state, MinIO objects, and the backend's local raster cache in named volumes.
 
+The optional **India air** map layer uses CPCB's hourly pollutant dataset through the Government of India's Open Data API. Create a free API key at [data.gov.in](https://www.data.gov.in/apis), add it to your local `.env` as `DATA_GOV_IN_API_KEY=...`, then run `docker compose up -d backend` to pass it to the backend. Without a key, the layer explains the setup requirement. CPCB's feed provides pollutant averages; RiverCast displays those source values and does not calculate an AQI.
+
 To stop the stack, run `docker compose down`. To delete local database, object, and raster data too, run `docker compose down -v`.
 
 ## Features
 
 - OpenLayers map with station markers, alert status, OpenStreetMap basemap, and optional raster overlays.
 - Station click popups, browser location centering, and interactive geodesic distance/area measurement tools based on OpenLayers examples.
-- Live map overlays: next-hour precipitation heatmap, recent precipitation radar, and GDACS tropical-cyclone alerts.
+- Live map overlays: next-hour precipitation heatmap, recent precipitation radar, GDACS tropical-cyclone alerts, public river gauges, and optional CPCB air-quality stations.
 - Station creation and CSV/JSON observation import from the interface.
 - Station-specific current weather from Open-Meteo with a 15-minute refresh; river discharge remains sourced from imported observations or visibly marked demo records.
 - Station history, forecast curves, run status/history, and manual forecast execution.
@@ -54,6 +56,7 @@ Gridded uploads are limited to 200 MB. The first two-dimensional variable is sel
 - `POST /api/data/gridded` multipart upload; `GET /api/data/gridded`
 - `GET /api/data/gridded/{asset_id}/tiles/{z}/{x}/{y}.png`
 - `GET /api/live/stations`, `GET /api/live/rainfall`, `GET /api/live/radar`, `GET /api/live/cyclones`
+- `GET /api/live/river-stations`, `GET /api/live/air-quality-stations`
 
 When `API_WRITE_TOKEN` is non-empty, write operations require `X-API-Token` with that value. The frontend's Write token box retains the token in that browser tab only. The token is a shared local write gate; it is not a full user/role identity system.
 
