@@ -24,7 +24,7 @@ from starlette.concurrency import run_in_threadpool
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from .database import SessionLocal, get_session, initialize_database
-from .forecasting import create_forecast_run
+from .forecasting import create_forecast_run, create_forecast_run_tracked
 from .models import ForecastRunRecord, GriddedAssetRecord, ObservationRecord, StationRecord
 from .processing import convert_to_cog
 from .storage import ensure_bucket, upload as upload_object
@@ -100,6 +100,7 @@ class RunSummary(BaseModel):
     model_name: str
     model_version: str
     is_demo_data: bool
+    error_message: str | None = None
 
 
 def _seed_demo_data() -> None:
@@ -140,10 +141,12 @@ def _scheduled_forecasts() -> None:
     try:
         with SessionLocal() as session:
             stations = session.scalars(select(StationRecord)).all()
+            failed = 0
             for station in stations:
-                create_forecast_run(session, station, hours=48)
+                run = create_forecast_run_tracked(session, station, hours=48)
+                failed += run.status == "failed"
             session.commit()
-            logger.info("Scheduled forecast completed for %s stations", len(stations))
+            logger.info("Scheduled forecasts finished for %s stations (%s failed)", len(stations), failed)
     except Exception:
         logger.exception("Scheduled forecast run failed")
 
@@ -346,7 +349,7 @@ async def import_observations(request: Request, session: Session = Depends(get_s
         stations[station_id].is_demo_data = False
     session.commit()
     for station_id in changed:
-        create_forecast_run(session, stations[station_id], hours=48)
+        create_forecast_run_tracked(session, stations[station_id], hours=48)
     session.commit()
     return ImportResponse(
         imported_rows=len(parsed),
@@ -387,8 +390,10 @@ def station_forecast(
     ).unique().scalar_one_or_none()
     now = datetime.now(UTC)
     if run is None or len(run.points) != hours + 1 or (now - run.generated_at).total_seconds() > 6 * 3600:
-        run = create_forecast_run(session, station, hours)
+        run = create_forecast_run_tracked(session, station, hours)
         session.commit()
+        if run.status == "failed":
+            raise HTTPException(status_code=503, detail=f"Forecast run failed: {run.error_message}")
     return _forecast_out(run)
 
 
@@ -428,9 +433,9 @@ def run_forecasts(
     stations = session.scalars(query).all()
     if station_id and not stations:
         raise HTTPException(status_code=404, detail="Station not found")
-    runs = [create_forecast_run(session, station, hours) for station in stations]
+    runs = [create_forecast_run_tracked(session, station, hours) for station in stations]
     session.commit()
-    return [RunSummary(id=run.id, station_id=run.station_id, station_name=run.station.name, generated_at=run.generated_at, status=run.status, model_name=run.model_name, model_version=run.model_version, is_demo_data=run.is_demo_data) for run in runs]
+    return [RunSummary(id=run.id, station_id=run.station_id, station_name=run.station.name, generated_at=run.generated_at, status=run.status, model_name=run.model_name, model_version=run.model_version, is_demo_data=run.is_demo_data, error_message=run.error_message) for run in runs]
 
 
 @app.get("/api/forecast-runs", response_model=list[RunSummary])
@@ -441,7 +446,7 @@ def list_forecast_runs(limit: int = Query(default=50, ge=1, le=200), session: Se
         .order_by(ForecastRunRecord.generated_at.desc())
         .limit(limit)
     ).unique().all()
-    return [RunSummary(id=run.id, station_id=run.station_id, station_name=run.station.name, generated_at=run.generated_at, status=run.status, model_name=run.model_name, model_version=run.model_version, is_demo_data=run.is_demo_data) for run in runs]
+    return [RunSummary(id=run.id, station_id=run.station_id, station_name=run.station.name, generated_at=run.generated_at, status=run.status, model_name=run.model_name, model_version=run.model_version, is_demo_data=run.is_demo_data, error_message=run.error_message) for run in runs]
 
 
 def _inspect_raster(path: Path) -> dict:

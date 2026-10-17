@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -13,6 +14,7 @@ from .models import ForecastPointRecord, ForecastRunRecord, ObservationRecord, S
 
 MODEL_NAME = "rivercast-rainfall-runoff"
 MODEL_VERSION = "0.1.0"
+logger = logging.getLogger("rivercast.forecasting")
 
 
 def create_forecast_run(session: Session, station: StationRecord, hours: int = 48) -> ForecastRunRecord:
@@ -63,4 +65,25 @@ def create_forecast_run(session: Session, station: StationRecord, hours: int = 4
         .where(ForecastRunRecord.id == run.id)
     ).unique().scalar_one_or_none()
     return result or run
+
+
+def create_forecast_run_tracked(session: Session, station: StationRecord, hours: int = 48) -> ForecastRunRecord:
+    """Run a forecast in a savepoint and persist a visible failure record on error."""
+    try:
+        with session.begin_nested():
+            return create_forecast_run(session, station, hours)
+    except Exception as exc:
+        logger.exception("Forecast failed for station %s", station.id)
+        failed = ForecastRunRecord(
+            station=station,
+            generated_at=datetime.now(UTC),
+            model_name=MODEL_NAME,
+            model_version=MODEL_VERSION,
+            is_demo_data=True,
+            status="failed",
+            error_message=str(exc)[:2000],
+        )
+        session.add(failed)
+        session.flush()
+        return failed
 
