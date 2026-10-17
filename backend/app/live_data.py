@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+import csv
+import gzip
+import io
 import logging
 import threading
 import time
@@ -21,7 +24,8 @@ _cache: dict[str, tuple[float, dict]] = {}
 def _get_json(url: str) -> dict | list:
     request = Request(url, headers={"User-Agent": "RiverCast-WebGIS/1.0", "Accept": "application/json"})
     with urlopen(request, timeout=18) as response:
-        return json.loads(response.read(8_000_000))
+        payload = response.read(8_000_000)
+        return json.loads(payload) if payload else []
 
 
 def _cached(key: str, ttl_seconds: int, loader) -> dict:
@@ -117,6 +121,73 @@ def station_weather(stations: list[dict]) -> dict:
         }
 
     return _cached(cache_key, 900, load)
+
+
+def metar_stations(south: float, west: float, north: float, east: float) -> dict:
+    """Return global current METAR observations inside the requested map bounds."""
+    def load_global() -> dict:
+        url = "https://aviationweather.gov/data/cache/metars.cache.csv.gz"
+        request = Request(url, headers={"User-Agent": "RiverCast-WebGIS/1.0", "Accept": "application/gzip"})
+        with urlopen(request, timeout=25) as response:
+            payload = gzip.decompress(response.read(20_000_000))
+        latest_by_station: dict[str, dict] = {}
+
+        def number(value: str | None) -> float | None:
+            try:
+                return float(value) if value not in (None, "") else None
+            except ValueError:
+                return None
+
+        for report in csv.DictReader(io.StringIO(payload.decode("utf-8-sig"))):
+            icao = (report.get("station_id") or "").strip()
+            latitude = number(report.get("latitude"))
+            longitude = number(report.get("longitude"))
+            if not icao or latitude is None or longitude is None:
+                continue
+            report_time = report.get("observation_time") or None
+            try:
+                wind_speed = float(report["wind_speed_kt"]) * 1.852 if report.get("wind_speed_kt") else None
+            except ValueError:
+                wind_speed = None
+            try:
+                wind_gust = float(report["wind_gust_kt"]) * 1.852 if report.get("wind_gust_kt") else None
+            except ValueError:
+                wind_gust = None
+            visibility_mi = report.get("visibility_statute_mi") or ""
+            visibility_km = number(visibility_mi.rstrip("+"))
+            if visibility_km is not None:
+                visibility_km *= 1.60934
+            latest_by_station[icao] = {
+                "station_id": icao,
+                "name": icao,
+                "latitude": latitude,
+                "longitude": longitude,
+                "valid_at": report_time,
+                "temperature_c": number(report.get("temp_c")),
+                "dew_point_c": number(report.get("dewpoint_c")),
+                "wind_speed_kmh": wind_speed,
+                "wind_gust_kmh": wind_gust,
+                "wind_direction_degrees": number(report.get("wind_dir_degrees")),
+                "visibility_km": visibility_km,
+                "weather": report.get("wx_string") or None,
+                "flight_category": report.get("flight_category") or None,
+                "raw_report": report.get("raw_text") or None,
+            }
+
+        return {
+            "stations": list(latest_by_station.values()),
+            "source": "Aviation Weather Center METAR",
+            "source_url": "https://aviationweather.gov/data/api/",
+            "fetched_at": datetime.now(UTC).isoformat(),
+        }
+
+    global_data = _cached("metar-global-current", 60, load_global)
+    reports = [
+        station for station in global_data["stations"]
+        if south <= station["latitude"] <= north
+        and (west <= station["longitude"] <= east if west <= east else station["longitude"] >= west or station["longitude"] <= east)
+    ]
+    return {**global_data, "stations": sorted(reports, key=lambda item: item["valid_at"] or "", reverse=True)}
 
 
 def radar_frames() -> dict:

@@ -25,7 +25,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from .database import SessionLocal, get_session, initialize_database
 from .forecasting import create_forecast_run, create_forecast_run_tracked
-from .live_data import cyclone_events, provider_error, radar_frames, rainfall_grid, station_weather
+from .live_data import cyclone_events, metar_stations, provider_error, radar_frames, rainfall_grid, station_weather
 from .models import ForecastRunRecord, GriddedAssetRecord, ObservationRecord, StationRecord
 from .processing import convert_to_cog
 from .storage import ensure_bucket, upload as upload_object
@@ -213,6 +213,22 @@ def live_station_weather(session: Session = Depends(get_session)) -> dict:
         return station_weather(inputs)
     except Exception as exc:
         logger.warning("Could not load live station weather: %s", exc)
+        raise HTTPException(status_code=503, detail=provider_error(exc)) from exc
+
+
+@app.get("/api/live/weather-stations")
+def live_weather_stations(
+    south: float = Query(-85.0, ge=-90, le=90),
+    west: float = Query(-180.0, ge=-180, le=180),
+    north: float = Query(85.0, ge=-90, le=90),
+    east: float = Query(180.0, ge=-180, le=180),
+) -> dict:
+    if north <= south or (east <= west and not (west > 0 and east < 0)):
+        raise HTTPException(status_code=422, detail="Map bounds must have a positive latitude and longitude span")
+    try:
+        return metar_stations(south, west, north, east)
+    except Exception as exc:
+        logger.warning("Could not load live METAR weather stations: %s", exc)
         raise HTTPException(status_code=503, detail=provider_error(exc)) from exc
 
 
