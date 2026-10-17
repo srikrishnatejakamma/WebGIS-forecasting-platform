@@ -25,7 +25,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from .database import SessionLocal, get_session, initialize_database
 from .forecasting import create_forecast_run, create_forecast_run_tracked
-from .live_data import cyclone_events, provider_error, radar_frames, rainfall_grid
+from .live_data import cyclone_events, provider_error, radar_frames, rainfall_grid, station_weather
 from .models import ForecastRunRecord, GriddedAssetRecord, ObservationRecord, StationRecord
 from .processing import convert_to_cog
 from .storage import ensure_bucket, upload as upload_object
@@ -202,6 +202,17 @@ def live_rainfall() -> dict:
         return rainfall_grid()
     except Exception as exc:
         logger.warning("Could not load live rainfall grid: %s", exc)
+        raise HTTPException(status_code=503, detail=provider_error(exc)) from exc
+
+
+@app.get("/api/live/stations")
+def live_station_weather(session: Session = Depends(get_session)) -> dict:
+    stations = session.scalars(select(StationRecord).order_by(StationRecord.name)).all()
+    inputs = [{"station_id": station.id, "latitude": station.latitude, "longitude": station.longitude} for station in stations]
+    try:
+        return station_weather(inputs)
+    except Exception as exc:
+        logger.warning("Could not load live station weather: %s", exc)
         raise HTTPException(status_code=503, detail=provider_error(exc)) from exc
 
 

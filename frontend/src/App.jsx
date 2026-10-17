@@ -55,6 +55,8 @@ function App() {
   const rasterLayers = useRef([]);
   const liveLayerRefs = useRef({});
   const [stations, setStations] = useState([]);
+  const [stationWeather, setStationWeather] = useState({});
+  const [stationWeatherStatus, setStationWeatherStatus] = useState('Loading live weather…');
   const [selectedId, setSelectedId] = useState(null);
   const [observations, setObservations] = useState([]);
   const [forecast, setForecast] = useState(null);
@@ -72,6 +74,7 @@ function App() {
   const [liveMeta, setLiveMeta] = useState({});
 
   const selected = stations.find((station) => station.id === selectedId) || stations[0];
+  const selectedWeather = selected ? stationWeather[selected.id] : null;
   const loadStations = useCallback(async () => {
     const rows = await api('/api/stations');
     setStations(rows);
@@ -100,6 +103,24 @@ function App() {
     });
     return () => map.setTarget(undefined);
   }, [loadAssets, loadStations]);
+
+  useEffect(() => {
+    if (!stations.length) return undefined;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const response = await api('/api/live/stations');
+        if (cancelled) return;
+        setStationWeather(Object.fromEntries(response.stations.map((reading) => [reading.station_id, reading])));
+        setStationWeatherStatus(`Open-Meteo weather updated ${dateLabel(response.fetched_at)} UTC`);
+      } catch (reason) {
+        if (!cancelled) setStationWeatherStatus(`Live weather unavailable: ${reason.message}`);
+      }
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 15 * 60 * 1000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [stations]);
 
   useEffect(() => {
     if (!selected) return;
@@ -270,7 +291,7 @@ function App() {
   }
 
   function saveToken(value) { setToken(value); sessionStorage.setItem('rivercast-token', value); }
-  const alertCount = useMemo(() => stations.filter((station) => station.status !== 'normal').length, [stations]);
+  const alertCount = useMemo(() => stations.filter((station) => !station.is_demo_data && station.status !== 'normal').length, [stations]);
   const lastUpdate = selected?.observed_at ? dateLabel(selected.observed_at) + ' UTC' : 'No observation yet';
   const combinedForecast = forecast?.points || [];
   const activeForecastPoint = combinedForecast[Math.min(forecastStep, Math.max(0, combinedForecast.length - 1))];
@@ -285,11 +306,11 @@ function App() {
     <main className="workspace">
       <aside className="sidebar">
         <div className="eyebrow">NETWORK OVERVIEW <span>●</span></div>
-        <div className="network-summary"><div><strong>{stations.length.toString().padStart(2, '0')}</strong><small>ACTIVE SITES</small></div><div className="summary-separator" /><div><strong className={alertCount ? 'alert-number' : ''}>{alertCount.toString().padStart(2, '0')}</strong><small>ON WATCH</small></div></div>
+        <div className="network-summary"><div><strong>{stations.length.toString().padStart(2, '0')}</strong><small>REGISTERED SITES</small></div><div className="summary-separator" /><div><strong className={alertCount ? 'alert-number' : ''}>{alertCount.toString().padStart(2, '0')}</strong><small>SENSOR ALERTS</small></div></div>
         <div className="section-heading"><span>Monitoring stations</span><button className="icon-button" title="Add station" onClick={() => setShowStationForm((value) => !value)}>＋</button></div>
-        <div className="station-list">{stations.map((station) => <button className={`station-card ${station.id === selectedId ? 'selected' : ''}`} key={station.id} onClick={() => setSelectedId(station.id)}>
-          <span className={`status-pin ${station.status}`} /><span className="station-info"><strong>{station.name}</strong><small>{station.river} River <span>·</span> {station.id}</small></span><span className="station-flow"><b>{fmt.format(station.current_discharge_m3s)}</b><small>m³/s</small></span>
-        </button>)}</div>
+        <div className="station-list">{stations.map((station) => { const weather = stationWeather[station.id]; return <button className={`station-card ${station.id === selectedId ? 'selected' : ''}`} key={station.id} onClick={() => setSelectedId(station.id)}>
+          <span className={`status-pin ${station.is_demo_data ? 'sample' : station.status}`} /><span className="station-info"><strong>{station.name}</strong><small>{station.river} River <span>·</span> {weather ? `${weather.temperature_c?.toFixed(0) ?? '—'}°C · rain ${weather.precipitation_mm?.toFixed(1) ?? '—'} mm` : 'Loading live weather…'}</small></span><span className="station-flow"><b>{fmt.format(station.current_discharge_m3s)}</b><small>{station.is_demo_data ? 'DEMO · ' : ''}m³/s</small></span>
+        </button>; })}</div><div className="station-feed-status">{stationWeatherStatus}</div>
         {showStationForm && <form className="inline-form" onSubmit={createStation}><div className="form-title">Add a monitoring site</div><input name="id" placeholder="station-id (lowercase)" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" /><input name="name" placeholder="Station name" required /><input name="river" placeholder="River" required /><div className="form-row"><input name="latitude" type="number" step="any" placeholder="Latitude" required /><input name="longitude" type="number" step="any" placeholder="Longitude" required /></div><input name="alert_level_m3s" type="number" min="1" placeholder="Alert threshold (m³/s)" required /><button className="primary-button" disabled={busy}>Save station</button></form>}
         <div className="sidebar-bottom"><div className="section-heading"><span>Data layers</span><span className="layer-count">{rasters.length} GRID{rasters.length === 1 ? '' : 'S'}</span></div>
           <label className="upload-row"><span className="upload-icon">↥</span><span><b>Import observations</b><small>CSV or JSON · up to 5,000 rows</small></span><input type="file" accept=".csv,.json" onChange={(event) => uploadFile(event.target.files?.[0], 'observations')} /></label>
@@ -299,15 +320,15 @@ function App() {
       </aside>
       <section className="map-panel">
         <div className="map-toolbar"><div><span className="map-title">River network</span><span className="map-subtitle">LIVE WEATHER · CYCLONE LAYERS</span></div><div className="map-actions"><button className="map-action" onClick={() => mapObject.current?.getView().animate({ center: fromLonLat([84.4, 22.8]), zoom: 5, duration: 500 })}>◎ <span>Overview</span></button><button className={`map-action ${liveLayers.rainfall ? 'active' : ''}`} aria-pressed={liveLayers.rainfall} onClick={() => setLiveLayers((state) => ({ ...state, rainfall: !state.rainfall }))}>🌧 <span>Rain heat</span></button><button className={`map-action ${liveLayers.radar ? 'active' : ''}`} aria-pressed={liveLayers.radar} onClick={() => setLiveLayers((state) => ({ ...state, radar: !state.radar }))}>▧ <span>Radar</span></button><button className={`map-action ${liveLayers.cyclones ? 'active' : ''}`} aria-pressed={liveLayers.cyclones} onClick={() => setLiveLayers((state) => ({ ...state, cyclones: !state.cyclones }))}>🌀 <span>Cyclones</span></button><button className="map-action" onClick={() => setActiveRasters(Object.fromEntries(rasters.map((asset) => [asset.id, true])))}>▤ <span>Show grids</span></button></div></div>
-        <div className="map-canvas" ref={mapElement}><div className="map-legend"><b>MAP LAYERS</b>{liveLayers.rainfall && <span><i className="weather-legend rainfall-legend" /> Rainfall · model</span>}{liveLayers.radar && <span><i className="weather-legend radar-legend" /> Recent radar</span>}{liveLayers.cyclones && <span><i className="weather-legend cyclone-legend" /> Cyclone alerts</span>}<span><i className="normal" /> Normal station</span><span><i className="watch" /> Watch station</span><span><i className="warning" /> Warning station</span><small>© OpenStreetMap · Weather by RainViewer</small></div><div className="scale-pill">{selected ? `${selected.latitude.toFixed(2)}° N  ·  ${selected.longitude.toFixed(2)}° E` : 'Map loading'}</div></div>
+        <div className="map-canvas" ref={mapElement}><div className="map-legend"><b>MAP LAYERS</b>{liveLayers.rainfall && <span><i className="weather-legend rainfall-legend" /> Rainfall · model</span>}{liveLayers.radar && <span><i className="weather-legend radar-legend" /> Recent radar</span>}{liveLayers.cyclones && <span><i className="weather-legend cyclone-legend" /> Cyclone alerts</span>}<span><i className="normal" /> Normal station</span><span><i className="watch" /> Watch station</span><span><i className="warning" /> Warning station</span><span><i className="weather-legend sample-legend" /> Sample flow</span><small>© OpenStreetMap · Weather by RainViewer</small></div><div className="scale-pill">{selected ? `${selected.latitude.toFixed(2)}° N  ·  ${selected.longitude.toFixed(2)}° E` : 'Map loading'}</div></div>
         <div className="map-footer"><span><i className="live-dot" /> {liveLayers.radar ? liveMeta.radar || 'Loading radar…' : liveLayers.rainfall ? liveMeta.rainfall || 'Loading rainfall…' : liveLayers.cyclones ? liveMeta.cyclones || 'Loading cyclone alerts…' : 'Live overlays are off'}</span><span>{liveLayers.cyclones && 'GDACS · '}{liveLayers.rainfall && 'Open-Meteo · '}{liveLayers.radar && <a href="https://www.rainviewer.com/" target="_blank" rel="noreferrer">RainViewer · </a>}Basemap · OpenStreetMap</span></div>
       </section>
       <aside className="detail-panel">
-        <div className="detail-header"><div className="eyebrow">SITE INTELLIGENCE</div><span className={`status-badge ${selected?.status || 'normal'}`}><i />{selected?.status || 'normal'}</span></div>
+        <div className="detail-header"><div className="eyebrow">SITE INTELLIGENCE</div><span className={`status-badge ${selected?.is_demo_data ? 'demo' : selected?.status || 'normal'}`}><i />{selected?.is_demo_data ? 'sample' : selected?.status || 'normal'}</span></div>
         {selected ? <>
           <div className="site-title"><h1>{selected.name}</h1><p>{selected.river} River <span>·</span> Gauge station</p></div>
-          <div className="flow-card"><div className="flow-card-top"><span>CURRENT DISCHARGE</span><span>● LIVE</span></div><div className="flow-value">{fmt.format(selected.current_discharge_m3s)}<small>m³/s</small></div><div className="flow-track"><i style={{ width: `${Math.min(100, selected.current_discharge_m3s / selected.alert_level_m3s * 100)}%`, background: colors[selected.status] }} /></div><div className="flow-range"><span>0</span><span>Alert threshold <b>{fmt.format(selected.alert_level_m3s)} m³/s</b></span></div></div>
-          <div className="metadata-grid"><div><small>LAST OBSERVED</small><b>{lastUpdate}</b></div><div><small>FORECAST MODEL</small><b>{forecast?.model_name || 'Loading…'}</b></div><div><small>FORECAST WINDOW</small><b>48 hours</b></div><div><small>DATA PROVENANCE</small><b>{selected.is_demo_data ? 'Illustrative sample' : 'Station observations'}</b></div></div>
+          <div className="flow-card"><div className="flow-card-top"><span>LATEST RIVER FLOW</span><span className={selected.is_demo_data ? 'sample-label' : ''}>{selected.is_demo_data ? 'DEMO SAMPLE' : 'OBSERVATION'}</span></div><div className="flow-value">{fmt.format(selected.current_discharge_m3s)}<small>m³/s</small></div><div className="flow-track"><i style={{ width: `${Math.min(100, selected.current_discharge_m3s / selected.alert_level_m3s * 100)}%`, background: colors[selected.status] }} /></div><div className="flow-range"><span>0</span><span>Alert threshold <b>{fmt.format(selected.alert_level_m3s)} m³/s</b></span></div></div>
+          <div className="metadata-grid"><div><small>LAST OBSERVED</small><b>{lastUpdate}</b></div><div><small>LIVE WEATHER · OPEN-METEO</small><b>{selectedWeather ? `${selectedWeather.temperature_c?.toFixed(1) ?? '—'}°C · rain ${selectedWeather.precipitation_mm?.toFixed(1) ?? '—'} mm` : 'Loading…'}</b></div><div><small>WIND · VALID UTC</small><b>{selectedWeather ? `${selectedWeather.wind_speed_kmh?.toFixed(0) ?? '—'} km/h · ${selectedWeather.valid_at || '—'}` : stationWeatherStatus}</b></div><div><small>FORECAST MODEL</small><b>{forecast?.model_name || 'Loading…'}</b></div><div><small>FORECAST WINDOW</small><b>48 hours</b></div><div><small>FLOW DATA PROVENANCE</small><b>{selected.is_demo_data ? 'Illustrative sample' : 'Station observations'}</b></div></div>
           <div className="chart-section"><div className="chart-heading"><div><b>Discharge outlook</b><small>Observed & forecast · m³/s</small></div><button className="run-button" disabled={busy} onClick={runForecast}>↻ Run forecast</button></div><div className="chart-legend"><span><i className="legend-observed" /> Observed</span><span><i className="legend-forecast" /> Forecast</span></div><RiverChart observed={chartObserved} forecast={combinedForecast} /><div className="forecast-timeline"><label>VALID TIME <b>{activeForecastPoint ? dateLabel(activeForecastPoint.valid_at) + ' UTC' : 'Loading forecast'}</b></label><input aria-label="Forecast time step" type="range" min="0" max={Math.max(0, combinedForecast.length - 1)} value={Math.min(forecastStep, Math.max(0, combinedForecast.length - 1))} disabled={!combinedForecast.length} onChange={(event) => setForecastStep(Number(event.target.value))} /><strong>{activeForecastPoint ? `${fmt.format(activeForecastPoint.discharge_m3s)} m³/s` : '—'}</strong></div></div>
           <div className="forecast-note"><span>ⓘ</span><p>{forecast?.is_demo_data ? 'Baseline forecast is illustrative and uncalibrated. Do not use for emergency decisions.' : 'Model outputs require local validation before operational use.'}</p></div>
         </> : <div className="empty-site">Waiting for station data…</div>}

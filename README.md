@@ -21,6 +21,7 @@ To stop the stack, run `docker compose down`. To delete local database, object, 
 - OpenLayers map with station markers, alert status, OpenStreetMap basemap, and optional raster overlays.
 - Live map overlays: next-hour precipitation heatmap, recent precipitation radar, and GDACS tropical-cyclone alerts.
 - Station creation and CSV/JSON observation import from the interface.
+- Station-specific current weather from Open-Meteo with a 15-minute refresh; river discharge remains sourced from imported observations or visibly marked demo records.
 - Station history, forecast curves, run status/history, and manual forecast execution.
 - Scheduled forecast runs every six hours.
 - GeoTIFF, NetCDF, and GRIB/GRIB2 upload, grid inspection, COG conversion, and XYZ PNG tiles.
@@ -51,7 +52,7 @@ Gridded uploads are limited to 200 MB. The first two-dimensional variable is sel
 - `GET /api/forecast-runs`
 - `POST /api/data/gridded` multipart upload; `GET /api/data/gridded`
 - `GET /api/data/gridded/{asset_id}/tiles/{z}/{x}/{y}.png`
-- `GET /api/live/rainfall`, `GET /api/live/radar`, `GET /api/live/cyclones`
+- `GET /api/live/stations`, `GET /api/live/rainfall`, `GET /api/live/radar`, `GET /api/live/cyclones`
 
 When `API_WRITE_TOKEN` is non-empty, write operations require `X-API-Token` with that value. The frontend's Write token box retains the token in that browser tab only. The token is a shared local write gate; it is not a full user/role identity system.
 
@@ -79,6 +80,6 @@ frontend/
 
 ## Scope and operational notes
 
-The included rainfall/runoff model is a transparent synthetic baseline. It is useful for exercising the end-to-end workflow, but it is uncalibrated and not suitable for operational warnings or emergency decisions. The seeded Indian gauges and their readings are illustrative. The optional map overlays use Open-Meteo's next-hour precipitation model, RainViewer's recent radar frames, and GDACS tropical-cyclone alerts with published storm GIS geometry where available. RainViewer's public feed shows recent radar imagery, not a forward radar nowcast. Provider data may be delayed or unavailable; these overlays are not an official warning service. Attribute Open-Meteo, RainViewer, and GDACS when redistributing the application, and review each provider's current terms for your use.
+The included rainfall/runoff model is a transparent synthetic baseline. It is useful for exercising the end-to-end workflow, but it is uncalibrated and not suitable for operational warnings or emergency decisions. The seeded Indian river gauges and their discharge readings are illustrative; Open-Meteo supplies model weather at their coordinates and does not provide river-gauge discharge. The optional map overlays use Open-Meteo's next-hour precipitation model, RainViewer's recent radar frames, and GDACS tropical-cyclone alerts with published storm GIS geometry where available. RainViewer's public feed shows recent radar imagery, not a forward radar nowcast. Provider data may be delayed or unavailable; these overlays are not an official warning service. Attribute Open-Meteo, RainViewer, and GDACS when redistributing the application, and review each provider's current terms for your use.
 
 The requirements document leaves the production study area, data providers and licenses, forecast variables, forecast horizon, ingestion frequency, model choice, user roles, retention, and service targets undecided. Those choices need domain configuration before production use. The local interface uses OpenStreetMap basemap tiles and requires internet access for them.

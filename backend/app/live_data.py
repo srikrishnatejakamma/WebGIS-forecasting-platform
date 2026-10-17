@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import threading
 import time
@@ -75,6 +76,47 @@ def rainfall_grid() -> dict:
         }
 
     return _cached("rainfall-grid", 1800, load)
+
+
+def station_weather(stations: list[dict]) -> dict:
+    """Return current model weather at registered station locations."""
+    normalized = [
+        {"station_id": str(item["station_id"]), "latitude": float(item["latitude"]), "longitude": float(item["longitude"])}
+        for item in stations
+    ]
+    if not normalized:
+        return {"stations": [], "source": "Open-Meteo", "source_url": "https://open-meteo.com/", "fetched_at": datetime.now(UTC).isoformat()}
+    cache_key = "station-weather-" + hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()
+
+    def load() -> dict:
+        readings = []
+        for offset in range(0, len(normalized), 40):
+            batch = normalized[offset:offset + 40]
+            query = urlencode({
+                "latitude": ",".join(str(item["latitude"]) for item in batch),
+                "longitude": ",".join(str(item["longitude"]) for item in batch),
+                "current": "temperature_2m,precipitation,wind_speed_10m,wind_direction_10m",
+                "timezone": "UTC",
+            })
+            response = _get_json(f"https://api.open-meteo.com/v1/forecast?{query}")
+            locations = response if isinstance(response, list) else [response]
+            for station, location in zip(batch, locations):
+                current = location.get("current") or {}
+                readings.append({
+                    **station,
+                    "valid_at": current.get("time"),
+                    "temperature_c": current.get("temperature_2m"),
+                    "precipitation_mm": current.get("precipitation"),
+                    "wind_speed_kmh": current.get("wind_speed_10m"),
+                    "wind_direction_degrees": current.get("wind_direction_10m"),
+                })
+        return {
+            "stations": readings, "source": "Open-Meteo",
+            "source_url": "https://open-meteo.com/",
+            "fetched_at": datetime.now(UTC).isoformat(),
+        }
+
+    return _cached(cache_key, 900, load)
 
 
 def radar_frames() -> dict:

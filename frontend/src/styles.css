@@ -9,3 +9,5 @@
 .run-ok.run-failed{background:#fff0ed;color:#d15e4e}.run-row .run-status.failed{color:#d15e4e}.run-row .run-error{max-width:215px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b45d4e}
 .map-actions{flex-wrap:wrap;justify-content:flex-end}.map-action.active{background:#eaf4ed;border-color:#9ccbb0;color:#26735e}.map-legend .weather-legend{width:10px;height:10px;border-radius:2px}.map-legend .rainfall-legend{background:linear-gradient(135deg,#fff7bc,#ec7014,#8c2d04)}.map-legend .radar-legend{background:#287fce}.map-legend .cyclone-legend{background:#cf5347}.map-footer a{color:#397b69;text-decoration:none}
 .map-toolbar{height:auto;min-height:57px;gap:6px;flex-wrap:wrap;padding-top:7px;padding-bottom:7px}.map-actions .map-action{padding:5px 6px;font-size:9px}.map-footer{gap:5px}.map-footer>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.station-feed-status{margin:5px 2px 0;font:400 8px var(--mono);color:#82928b}.status-badge.demo{background:#fff6e7;color:#a87934}.flow-card-top .sample-label{color:#a87934}
+.status-pin.sample{background:#a8b2ac;box-shadow:0 0 0 3px #a8b2ac22}.map-legend .sample-legend{background:#a8b2ac}
