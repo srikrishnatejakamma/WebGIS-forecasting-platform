@@ -190,6 +190,186 @@ def metar_stations(south: float, west: float, north: float, east: float) -> dict
     return {**global_data, "stations": sorted(reports, key=lambda item: item["valid_at"] or "", reverse=True)}
 
 
+def river_gauge_stations(south: float, west: float, north: float, east: float) -> dict:
+    """Aggregate no-key, near-real-time river gauges where providers publish them."""
+    gauges: list[dict] = []
+    providers: list[dict] = []
+
+    def collect(provider: str, url: str, parser) -> None:
+        try:
+            payload = _get_json(url)
+            rows = parser(payload)
+            providers.append({"id": provider, "status": "ok", "count": len(rows)})
+            gauges.extend(rows)
+        except Exception as exc:
+            logger.warning("Could not load %s river gauges: %s", provider, exc)
+            providers.append({"id": provider, "status": "unavailable", "count": 0})
+
+    def usgs(payload: dict | list) -> list[dict]:
+        rows = []
+        for feature in payload.get("features", []) if isinstance(payload, dict) else []:
+            properties = feature.get("properties") or {}
+            coordinates = (feature.get("geometry") or {}).get("coordinates") or []
+            if len(coordinates) < 2:
+                continue
+            try:
+                value = float(properties.get("value"))
+                longitude, latitude = float(coordinates[0]), float(coordinates[1])
+            except (TypeError, ValueError):
+                continue
+            unit = str(properties.get("unit_of_measure") or "ft3/s").lower().replace(" ", "")
+            if unit in {"ft3/s", "ft³/s", "cubicfeetpersecond", "cfs"}:
+                value *= 0.028316846592
+            elif unit not in {"m3/s", "m³/s", "cms", "cubicmeterspersecond"}:
+                continue
+            station_id = str(properties.get("monitoring_location_id") or feature.get("id") or "USGS")
+            rows.append({
+                "station_id": station_id, "name": properties.get("monitoring_location_name") or station_id,
+                "latitude": latitude, "longitude": longitude,
+                "discharge_m3s": value, "water_level_m": None,
+                "valid_at": properties.get("time"), "units": "m3/s",
+                "parameter": "discharge", "source": "USGS Water Data",
+                "source_url": "https://api.waterdata.usgs.gov/ogcapi/v1/",
+                "qualifier": properties.get("qualifier"),
+            })
+        return rows
+
+    def canada(payload: dict | list) -> list[dict]:
+        rows = []
+        for feature in payload.get("features", []) if isinstance(payload, dict) else []:
+            properties = feature.get("properties") or {}
+            coordinates = (feature.get("geometry") or {}).get("coordinates") or []
+            if len(coordinates) < 2:
+                continue
+            try:
+                longitude, latitude = float(coordinates[0]), float(coordinates[1])
+                discharge = float(properties["DISCHARGE"]) if properties.get("DISCHARGE") is not None else None
+                level = float(properties["LEVEL"]) if properties.get("LEVEL") is not None else None
+            except (TypeError, ValueError, KeyError):
+                continue
+            station_id = str(properties.get("STATION_NUMBER") or properties.get("IDENTIFIER") or "ECCC")
+            rows.append({
+                "station_id": f"CA-{station_id}", "name": properties.get("STATION_NAME") or station_id,
+                "latitude": latitude, "longitude": longitude,
+                "discharge_m3s": discharge, "water_level_m": level,
+                "valid_at": properties.get("DATETIME") or properties.get("DATETIME_LST"),
+                "units": "m3/s", "parameter": "discharge and level" if discharge is not None and level is not None else "discharge" if discharge is not None else "water level",
+                "source": "Environment and Climate Change Canada",
+                "source_url": "https://api.weather.gc.ca/collections/hydrometric-realtime",
+            })
+        return rows
+
+    def england(payload: dict | list) -> list[dict]:
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        rows = []
+        for item in items:
+            measure = item.get("measure") or {}
+            unit = str(measure.get("unitName") or "")
+            try:
+                value = float(item.get("value"))
+            except (TypeError, ValueError):
+                continue
+            if unit == "Ml/d":
+                value /= 86.4
+            elif unit in {"l/s", "L/s"}:
+                value /= 1000
+            elif unit not in {"m3/s", "m³/s"}:
+                continue
+            station = measure.get("station") or {}
+            station_id = str(measure.get("stationReference") or "")
+            rows.append({
+                "station_id": f"GB-ENG-{station_id}", "name": station.get("label") or station_id,
+                "discharge_m3s": value, "water_level_m": None,
+                "valid_at": item.get("dateTime"), "units": "m3/s", "parameter": "discharge",
+                "source": "Environment Agency England",
+                "source_url": "https://environment.data.gov.uk/flood-monitoring/doc/reference",
+                "_station_ref": station_id,
+            })
+        return rows
+
+    def load_england() -> list[dict]:
+        readings = _get_json("https://environment.data.gov.uk/flood-monitoring/data/readings?latest&parameter=flow&_view=full&_limit=5000")
+        stations_payload = _get_json("https://environment.data.gov.uk/flood-monitoring/id/stations?parameter=flow&_limit=5000")
+        points = england(readings)
+        station_items = stations_payload.get("items", []) if isinstance(stations_payload, dict) else []
+        station_by_ref = {
+            str(station.get("notation") or station.get("RLOIid") or station.get("stationReference") or (station.get("@id") or "").rsplit("/", 1)[-1]): station
+            for station in station_items
+        }
+        result = []
+        for point in points:
+            station_ref = point.pop("_station_ref")
+            station = station_by_ref.get(station_ref) or {}
+            try:
+                point["latitude"] = float(station["lat"])
+                point["longitude"] = float(station["long"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if point["name"] in {"", station_ref} and station.get("label"):
+                point["name"] = station["label"]
+            result.append(point)
+        return result
+
+    def regional_bounds(bounds: tuple[float, float, float, float]) -> tuple[float, float, float, float] | None:
+        west_bound, south_bound, east_bound, north_bound = bounds
+        clipped = (max(west, west_bound), max(south, south_bound), min(east, east_bound), min(north, north_bound))
+        return clipped if clipped[0] < clipped[2] and clipped[1] < clipped[3] else None
+
+    def load() -> dict:
+        # Provider item APIs accept viewport bounding boxes and return real gauge
+        # measurements, unlike global model grids or historical station catalogs.
+        regions = {
+            "USGS": (-126.0, 24.0, -66.0, 50.0),
+            "Canada": (-141.0, 41.0, -52.0, 84.0),
+            "England": (-6.5, 49.5, 2.0, 56.0),
+        }
+        us_bounds = regional_bounds(regions["USGS"])
+        if us_bounds:
+            escaped_bbox = urlencode({"bbox": ",".join(map(str, us_bounds))})
+            collect("USGS", f"https://api.waterdata.usgs.gov/ogcapi/v1/collections/latest-continuous/items?f=json&parameter_code=00060&limit=5000&{escaped_bbox}", usgs)
+        else:
+            providers.append({"id": "USGS", "status": "outside_view", "count": 0})
+        canada_bounds = regional_bounds(regions["Canada"])
+        if canada_bounds:
+            canada_query = urlencode({
+                "bbox": ",".join(map(str, canada_bounds)), "sortby": "-DATETIME",
+            })
+            collect("Canada", f"https://api.weather.gc.ca/collections/hydrometric-realtime/items?f=json&limit=1000&{canada_query}", canada)
+        else:
+            providers.append({"id": "Canada", "status": "outside_view", "count": 0})
+        england_bounds = regional_bounds(regions["England"])
+        if england_bounds:
+            try:
+                rows = _cached("environment-agency-england-current-flow", 900, load_england)
+                rows = [row for row in rows if england_bounds[1] <= row["latitude"] <= england_bounds[3] and england_bounds[0] <= row["longitude"] <= england_bounds[2]]
+                providers.append({"id": "England", "status": "ok", "count": len(rows)})
+                gauges.extend(rows)
+            except Exception as exc:
+                logger.warning("Could not load Environment Agency river gauges: %s", exc)
+                providers.append({"id": "England", "status": "unavailable", "count": 0})
+        else:
+            providers.append({"id": "England", "status": "outside_view", "count": 0})
+        # The Canadian feed can contain many samples per gauge. Keep the most
+        # recent observation for each station so the map represents stations,
+        # not a dense trail of historical sample points.
+        latest_by_station: dict[str, dict] = {}
+        for gauge in gauges:
+            gauge.pop("_station_ref", None)
+            station_id = gauge["station_id"]
+            previous = latest_by_station.get(station_id)
+            if previous is None or (gauge.get("valid_at") or "") > (previous.get("valid_at") or ""):
+                latest_by_station[station_id] = gauge
+        deduped_gauges = list(latest_by_station.values())
+        return {
+            "stations": deduped_gauges,
+            "providers": providers,
+            "source": "USGS, Environment and Climate Change Canada, Environment Agency England",
+            "fetched_at": datetime.now(UTC).isoformat(),
+        }
+
+    return _cached(f"river-gauges:{south:.3f}:{west:.3f}:{north:.3f}:{east:.3f}", 900, load)
+
+
 def radar_frames() -> dict:
     """Get recent radar frames and tile URL from RainViewer."""
     def load() -> dict:
