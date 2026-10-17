@@ -4,6 +4,8 @@ import View from 'ol/View.js';
 import TileLayer from 'ol/layer/Tile.js';
 import VectorLayer from 'ol/layer/Vector.js';
 import Heatmap from 'ol/layer/Heatmap.js';
+import Draw from 'ol/interaction/Draw.js';
+import Overlay from 'ol/Overlay.js';
 import OSM from 'ol/source/OSM.js';
 import XYZ from 'ol/source/XYZ.js';
 import VectorSource from 'ol/source/Vector.js';
@@ -11,6 +13,7 @@ import GeoJSON from 'ol/format/GeoJSON.js';
 import Feature from 'ol/Feature.js';
 import Point from 'ol/geom/Point.js';
 import { fromLonLat } from 'ol/proj.js';
+import { getArea, getLength } from 'ol/sphere.js';
 import { Circle as CircleStyle, Fill, Stroke, Style, Text } from 'ol/style.js';
 import 'ol/ol.css';
 
@@ -52,6 +55,9 @@ function App() {
   const mapElement = useRef(null);
   const mapObject = useRef(null);
   const stationLayer = useRef(null);
+  const popupElement = useRef(null);
+  const popupOverlay = useRef(null);
+  const measureSource = useRef(null);
   const rasterLayers = useRef([]);
   const liveLayerRefs = useRef({});
   const [stations, setStations] = useState([]);
@@ -70,11 +76,16 @@ function App() {
   const [error, setError] = useState('');
   const [showStationForm, setShowStationForm] = useState(false);
   const [forecastStep, setForecastStep] = useState(0);
+  const [popupStationId, setPopupStationId] = useState(null);
+  const [measureMode, setMeasureMode] = useState(null);
+  const [lastMeasurement, setLastMeasurement] = useState('');
   const [liveLayers, setLiveLayers] = useState({ rainfall: false, radar: false, cyclones: false });
   const [liveMeta, setLiveMeta] = useState({});
 
   const selected = stations.find((station) => station.id === selectedId) || stations[0];
   const selectedWeather = selected ? stationWeather[selected.id] : null;
+  const popupStation = stations.find((station) => station.id === popupStationId);
+  const popupWeather = popupStation ? stationWeather[popupStation.id] : null;
   const loadStations = useCallback(async () => {
     const rows = await api('/api/stations');
     setStations(rows);
@@ -94,9 +105,25 @@ function App() {
       return [new Style({ image: new CircleStyle({ radius: feature.get('selected') ? 9 : 7, fill: new Fill({ color }), stroke: new Stroke({ color: '#fff', width: 3 }) }) }), new Style({ text: new Text({ text: feature.get('selected') ? feature.get('name') : '', offsetY: -19, font: '600 12px Inter, sans-serif', fill: new Fill({ color: '#193b36' }), backgroundFill: new Fill({ color: '#ffffffdd' }), padding: [3, 6, 3, 6] }) })];
     } });
     stationLayer.current = markerLayer;
-    const map = new Map({ target: mapElement.current, layers: [new TileLayer({ source: new OSM() }), markerLayer], view: new View({ center: fromLonLat([84.4, 22.8]), zoom: 5, minZoom: 3, maxZoom: 18 }), controls: [] });
+    const measurements = new VectorSource();
+    measureSource.current = measurements;
+    const measureLayer = new VectorLayer({ source: measurements, style: new Style({ stroke: new Stroke({ color: '#245dce', width: 3, lineDash: [8, 5] }), fill: new Fill({ color: '#4687ef2b' }), image: new CircleStyle({ radius: 5, fill: new Fill({ color: '#245dce' }), stroke: new Stroke({ color: '#fff', width: 2 }) }) }) });
+    const map = new Map({ target: mapElement.current, layers: [new TileLayer({ source: new OSM() }), measureLayer, markerLayer], view: new View({ center: fromLonLat([84.4, 22.8]), zoom: 5, minZoom: 3, maxZoom: 18 }), controls: [] });
     mapObject.current = map;
-    map.on('singleclick', (event) => map.forEachFeatureAtPixel(event.pixel, (feature) => setSelectedId(feature.get('stationId'))));
+    const popup = new Overlay({ element: popupElement.current, positioning: 'bottom-center', offset: [0, -14], stopEvent: true, autoPan: { animation: { duration: 220 } } });
+    popupOverlay.current = popup;
+    map.addOverlay(popup);
+    map.on('singleclick', (event) => {
+      const feature = map.forEachFeatureAtPixel(event.pixel, (item) => item, { layerFilter: (layer) => layer === markerLayer });
+      if (feature) {
+        setSelectedId(feature.get('stationId'));
+        setPopupStationId(feature.get('stationId'));
+        popup.setPosition(feature.getGeometry().getCoordinates());
+      } else {
+        setPopupStationId(null);
+        popup.setPosition(undefined);
+      }
+    });
     Promise.allSettled([loadStations(), loadAssets()]).then((results) => {
       const failure = results.find((result) => result.status === 'rejected');
       if (failure) setError(failure.reason.message);
@@ -121,6 +148,24 @@ function App() {
     const timer = window.setInterval(refresh, 15 * 60 * 1000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [stations]);
+
+  useEffect(() => {
+    const map = mapObject.current;
+    if (!map || !measureSource.current || !measureMode) return undefined;
+    const draw = new Draw({ source: measureSource.current, type: measureMode, stopClick: true });
+    draw.on('drawend', ({ feature }) => {
+      const geometry = feature.getGeometry();
+      if (measureMode === 'LineString') {
+        const meters = getLength(geometry);
+        setLastMeasurement(meters >= 1000 ? `${(meters / 1000).toFixed(2)} km` : `${meters.toFixed(0)} m`);
+      } else {
+        const squareMeters = getArea(geometry);
+        setLastMeasurement(squareMeters >= 1_000_000 ? `${(squareMeters / 1_000_000).toFixed(2)} km²` : `${squareMeters.toFixed(0)} m²`);
+      }
+    });
+    map.addInteraction(draw);
+    return () => map.removeInteraction(draw);
+  }, [measureMode]);
 
   useEffect(() => {
     if (!selected) return;
@@ -290,6 +335,14 @@ function App() {
     await withBusy(async () => { await api(`/api/forecast-runs?hours=48${selected ? `&station_id=${encodeURIComponent(selected.id)}` : ''}`, { method: 'POST' }, token); await loadAssets(); if (selected) setForecast(await api(`/api/stations/${selected.id}/forecast?hours=48`)); }, 'Forecast run completed.');
   }
 
+  function locateUser() {
+    if (!navigator.geolocation) { setError('This browser does not provide location access.'); return; }
+    navigator.geolocation.getCurrentPosition(({ coords }) => {
+      mapObject.current?.getView().animate({ center: fromLonLat([coords.longitude, coords.latitude]), zoom: 10, duration: 500 });
+      setMessage('Map centered on your location.');
+    }, (reason) => setError(reason.message || 'Could not read your location.'), { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+  }
+
   function saveToken(value) { setToken(value); sessionStorage.setItem('rivercast-token', value); }
   const alertCount = useMemo(() => stations.filter((station) => !station.is_demo_data && station.status !== 'normal').length, [stations]);
   const lastUpdate = selected?.observed_at ? dateLabel(selected.observed_at) + ' UTC' : 'No observation yet';
@@ -319,8 +372,8 @@ function App() {
         </div>
       </aside>
       <section className="map-panel">
-        <div className="map-toolbar"><div><span className="map-title">River network</span><span className="map-subtitle">LIVE WEATHER · CYCLONE LAYERS</span></div><div className="map-actions"><button className="map-action" onClick={() => mapObject.current?.getView().animate({ center: fromLonLat([84.4, 22.8]), zoom: 5, duration: 500 })}>◎ <span>Overview</span></button><button className={`map-action ${liveLayers.rainfall ? 'active' : ''}`} aria-pressed={liveLayers.rainfall} onClick={() => setLiveLayers((state) => ({ ...state, rainfall: !state.rainfall }))}>🌧 <span>Rain heat</span></button><button className={`map-action ${liveLayers.radar ? 'active' : ''}`} aria-pressed={liveLayers.radar} onClick={() => setLiveLayers((state) => ({ ...state, radar: !state.radar }))}>▧ <span>Radar</span></button><button className={`map-action ${liveLayers.cyclones ? 'active' : ''}`} aria-pressed={liveLayers.cyclones} onClick={() => setLiveLayers((state) => ({ ...state, cyclones: !state.cyclones }))}>🌀 <span>Cyclones</span></button><button className="map-action" onClick={() => setActiveRasters(Object.fromEntries(rasters.map((asset) => [asset.id, true])))}>▤ <span>Show grids</span></button></div></div>
-        <div className="map-canvas" ref={mapElement}><div className="map-legend"><b>MAP LAYERS</b>{liveLayers.rainfall && <span><i className="weather-legend rainfall-legend" /> Rainfall · model</span>}{liveLayers.radar && <span><i className="weather-legend radar-legend" /> Recent radar</span>}{liveLayers.cyclones && <span><i className="weather-legend cyclone-legend" /> Cyclone alerts</span>}<span><i className="normal" /> Normal station</span><span><i className="watch" /> Watch station</span><span><i className="warning" /> Warning station</span><span><i className="weather-legend sample-legend" /> Sample flow</span><small>© OpenStreetMap · Weather by RainViewer</small></div><div className="scale-pill">{selected ? `${selected.latitude.toFixed(2)}° N  ·  ${selected.longitude.toFixed(2)}° E` : 'Map loading'}</div></div>
+        <div className="map-toolbar"><div><span className="map-title">River network</span><span className="map-subtitle">LIVE WEATHER · CYCLONE LAYERS</span></div><div className="map-actions"><button className="map-action" onClick={() => mapObject.current?.getView().animate({ center: fromLonLat([84.4, 22.8]), zoom: 5, duration: 500 })}>◎ <span>Overview</span></button><button className="map-action" onClick={locateUser} title="Center map on your location">⌖ <span>My location</span></button><button className={`map-action ${measureMode === 'LineString' ? 'active' : ''}`} aria-pressed={measureMode === 'LineString'} onClick={() => setMeasureMode((mode) => mode === 'LineString' ? null : 'LineString')}>↗ <span>Distance</span></button><button className={`map-action ${measureMode === 'Polygon' ? 'active' : ''}`} aria-pressed={measureMode === 'Polygon'} onClick={() => setMeasureMode((mode) => mode === 'Polygon' ? null : 'Polygon')}>▱ <span>Area</span></button><button className="map-action" onClick={() => { measureSource.current?.clear(); setLastMeasurement(''); }}>× <span>Clear measure</span></button><button className={`map-action ${liveLayers.rainfall ? 'active' : ''}`} aria-pressed={liveLayers.rainfall} onClick={() => setLiveLayers((state) => ({ ...state, rainfall: !state.rainfall }))}>🌧 <span>Rain heat</span></button><button className={`map-action ${liveLayers.radar ? 'active' : ''}`} aria-pressed={liveLayers.radar} onClick={() => setLiveLayers((state) => ({ ...state, radar: !state.radar }))}>▧ <span>Radar</span></button><button className={`map-action ${liveLayers.cyclones ? 'active' : ''}`} aria-pressed={liveLayers.cyclones} onClick={() => setLiveLayers((state) => ({ ...state, cyclones: !state.cyclones }))}>🌀 <span>Cyclones</span></button><button className="map-action" onClick={() => setActiveRasters(Object.fromEntries(rasters.map((asset) => [asset.id, true])))}>▤ <span>Show grids</span></button></div></div>
+        <div className="map-canvas" ref={mapElement}><div className="map-legend"><b>MAP LAYERS</b>{liveLayers.rainfall && <span><i className="weather-legend rainfall-legend" /> Rainfall · model</span>}{liveLayers.radar && <span><i className="weather-legend radar-legend" /> Recent radar</span>}{liveLayers.cyclones && <span><i className="weather-legend cyclone-legend" /> Cyclone alerts</span>}<span><i className="normal" /> Normal station</span><span><i className="watch" /> Watch station</span><span><i className="warning" /> Warning station</span><span><i className="weather-legend sample-legend" /> Sample flow</span><small>© OpenStreetMap · Weather by RainViewer</small></div><div className="scale-pill">{selected ? `${selected.latitude.toFixed(2)}° N  ·  ${selected.longitude.toFixed(2)}° E` : 'Map loading'}</div>{measureMode && <div className="measure-hint">Draw a {measureMode === 'LineString' ? 'line' : 'polygon'} on the map; double-click to finish{lastMeasurement ? ` · Last: ${lastMeasurement}` : ''}</div>}<div className="station-map-popup" ref={popupElement} onClick={(event) => event.stopPropagation()}>{popupStation && <><button className="popup-close" aria-label="Close station popup" onClick={() => { setPopupStationId(null); popupOverlay.current?.setPosition(undefined); }}>×</button><b>{popupStation.name}</b><small>{popupStation.river} River gauge</small><p>{fmt.format(popupStation.current_discharge_m3s)} m³/s <span>{popupStation.is_demo_data ? 'sample flow' : 'observed flow'}</span></p><p>{popupWeather ? `${popupWeather.temperature_c?.toFixed(1) ?? '—'}°C · rain ${popupWeather.precipitation_mm?.toFixed(1) ?? '—'} mm · wind ${popupWeather.wind_speed_kmh?.toFixed(0) ?? '—'} km/h` : 'Loading live weather…'}</p><small>Weather: Open-Meteo · {popupWeather?.valid_at || 'updating'}</small></>}</div></div>
         <div className="map-footer"><span><i className="live-dot" /> {liveLayers.radar ? liveMeta.radar || 'Loading radar…' : liveLayers.rainfall ? liveMeta.rainfall || 'Loading rainfall…' : liveLayers.cyclones ? liveMeta.cyclones || 'Loading cyclone alerts…' : 'Live overlays are off'}</span><span>{liveLayers.cyclones && 'GDACS · '}{liveLayers.rainfall && 'Open-Meteo · '}{liveLayers.radar && <a href="https://www.rainviewer.com/" target="_blank" rel="noreferrer">RainViewer · </a>}Basemap · OpenStreetMap</span></div>
       </section>
       <aside className="detail-panel">
