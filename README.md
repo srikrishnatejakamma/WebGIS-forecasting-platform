@@ -2,6 +2,16 @@
 
 RiverCast is a local, Docker Compose based WebGIS for hydrological station observations, forecast runs, gridded data ingestion, and map visualization. The stack contains a React/OpenLayers frontend, FastAPI backend, PostGIS database, and MinIO object storage.
 
+## Platform overview
+
+![RiverCast dashboard](screenshots/rivercast-dashboard.png)
+
+![RiverCast system architecture](screenshots/architecture.svg)
+
+## Data workflow
+
+![RiverCast data workflow](screenshots/data-workflow.svg)
+
 ## Start locally
 
 Install Docker Desktop with Compose, then from this directory run:

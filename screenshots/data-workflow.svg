@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="460" viewBox="0 0 1280 460" role="img" aria-labelledby="title desc">
+  <title id="title">RiverCast data workflow</title>
+  <desc id="desc">Stations and observations enter through the interface or import endpoints, forecasts are generated and saved, and the map and charts display the results. Gridded data is converted into map tiles.</desc>
+  <defs>
+    <linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f6faf8"/><stop offset="1" stop-color="#eaf3f0"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#183d36" flood-opacity=".10"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10z" fill="#4b8073"/></marker>
+    <style>text{font-family:Inter,Segoe UI,Arial,sans-serif;fill:#173a34}.title{font-size:28px;font-weight:700}.sub{font-size:15px;fill:#607972}.head{font-size:17px;font-weight:700}.body{font-size:13px;fill:#4f6963}.tag{font-size:11px;font-weight:700;letter-spacing:1px;fill:#478072}.line{fill:none;stroke:#4b8073;stroke-width:3;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1280" height="460" rx="24" fill="url(#bg)"/>
+  <text x="64" y="68" class="title">From observations to map layers</text>
+  <text x="64" y="98" class="sub">RiverCast connects gauge data, forecasts, and gridded uploads in one workspace</text>
+  <g filter="url(#shadow)">
+    <rect x="68" y="178" width="245" height="176" rx="18" fill="#fff" stroke="#cfe2da" stroke-width="2"/>
+    <rect x="374" y="178" width="245" height="176" rx="18" fill="#fff" stroke="#cfe2da" stroke-width="2"/>
+    <rect x="680" y="178" width="245" height="176" rx="18" fill="#fff" stroke="#cfe2da" stroke-width="2"/>
+    <rect x="986" y="178" width="230" height="176" rx="18" fill="#fff" stroke="#cfe2da" stroke-width="2"/>
+  </g>
+  <text x="94" y="220" class="tag">1 · INPUT</text>
+  <text x="94" y="254" class="head">Stations and data</text>
+  <text x="94" y="284" class="body">Create gauges in the interface</text>
+  <text x="94" y="307" class="body">Import CSV or JSON observations</text>
+  <text x="94" y="330" class="body">Upload GeoTIFF, NetCDF, or GRIB</text>
+  <text x="400" y="220" class="tag">2 · PROCESS</text>
+  <text x="400" y="254" class="head">Validate and prepare</text>
+  <text x="400" y="284" class="body">Check station and timestamp data</text>
+  <text x="400" y="307" class="body">Store records in PostGIS</text>
+  <text x="400" y="330" class="body">Convert supported grids to COG</text>
+  <text x="706" y="220" class="tag">3 · FORECAST</text>
+  <text x="706" y="254" class="head">Generate predictions</text>
+  <text x="706" y="284" class="body">Run the baseline model on demand</text>
+  <text x="706" y="307" class="body">Or let the scheduler run every 6 hours</text>
+  <text x="706" y="330" class="body">Save forecast runs and time points</text>
+  <text x="1012" y="220" class="tag">4 · EXPLORE</text>
+  <text x="1012" y="254" class="head">View results</text>
+  <text x="1012" y="284" class="body">Inspect stations and river trends</text>
+  <text x="1012" y="307" class="body">Compare forecast and observations</text>
+  <text x="1012" y="330" class="body">Overlay grid tiles on the map</text>
+  <path d="M313 266H363" class="line"/>
+  <path d="M619 266H669" class="line"/>
+  <path d="M925 266H975" class="line"/>
+  <text x="68" y="405" class="body">Grid files are kept in MinIO; forecast and observation records are kept in PostGIS.</text>
+</svg>
