@@ -1,6 +1,6 @@
 import { fmt, dateLabel } from './formatters.js';
 
-export default function StationSidebar({ sidebarTab, setSidebarTab, stations, weatherStations, riverStations, airQualityStations, rasters, stationQuery, setStationQuery, visibleStations, selectedId, setSelectedId, setActiveWeatherStation, setActiveRiverStation, setActiveAirQualityStation, stationWeather, stationWeatherStatus, weatherStationsStatus, riverStationsStatus, airQualityStatus, liveLayers, mapObject, uploadFile, activeRasters, setActiveRasters, toggleStationForm }) {
+export default function StationSidebar({ sidebarTab, setSidebarTab, stations, weatherStations, riverStations, airQualityStations, rasters, stationQuery, setStationQuery, visibleStations, selectedId, setSelectedId, setActiveWeatherStation, setActiveRiverStation, setActiveAirQualityStation, stationWeather, stationWeatherStatus, weatherStationsStatus, riverStationsStatus, airQualityStatus, liveLayers, mapObject, uploadFile, fetchNoaaGrid, busy, activeRasters, setActiveRasters, toggleStationForm }) {
   return (
       <aside className="sidebar">
         <div className="sidebar-section-label"><span className="section-index">01</span><span>STATION NETWORK</span><span className="section-live"><i /> LIVE</span></div>
@@ -23,6 +23,7 @@ export default function StationSidebar({ sidebarTab, setSidebarTab, stations, we
         <div className="sidebar-bottom"><div className="section-heading"><span>Data layers</span><span className="layer-count">{rasters.length} GRID{rasters.length === 1 ? '' : 'S'}</span></div>
           <label className="upload-row"><span className="upload-icon">↥</span><span><b>Import observations</b><small>CSV or JSON · up to 5,000 rows</small></span><input type="file" accept=".csv,.json" onChange={(event) => uploadFile(event.target.files?.[0], 'observations')} /></label>
           <label className="upload-row"><span className="upload-icon">▧</span><span><b>Upload raster or grid</b><small>GeoTIFF · NetCDF · GRIB</small></span><input type="file" accept=".tif,.tiff,.nc,.grib,.grb,.grb2" onChange={(event) => uploadFile(event.target.files?.[0], 'raster')} /></label>
+          <button className="primary-button" type="button" onClick={fetchNoaaGrid} disabled={busy}>Download NOAA GFS rainfall forecast</button>
           {rasters.map((asset) => asset.tile_url ? <label className="raster-toggle" key={asset.id}><input type="checkbox" checked={!!activeRasters[asset.id]} onChange={(event) => setActiveRasters((current) => ({ ...current, [asset.id]: event.target.checked }))} /><span>{asset.filename}</span><small>COG</small></label> : <div className="raster-failed" key={asset.id}><span>{asset.filename}</span><small>{asset.processing_status || 'failed'}</small></div>)}
         </div>
         </div>}

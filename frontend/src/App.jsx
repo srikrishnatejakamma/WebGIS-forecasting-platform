@@ -67,9 +67,16 @@ function App() {
   const loadAssets = useCallback(async () => {
     const [assets, history, status] = await Promise.all([api('/api/data/gridded'), api('/api/forecast-runs?limit=30'), api('/api/health')]);
     setRasters(assets);
+    const noaaAsset = assets.find((asset) => asset.model === 'GFS' && asset.tile_url);
+    if (noaaAsset) setActiveRasters((current) => current[noaaAsset.id] === undefined ? { ...current, [noaaAsset.id]: true } : current);
     setRuns(history);
     setHealth(status);
   }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => { loadAssets().catch(() => {}); }, 5 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [loadAssets]);
 
   const { mapElement, mapObject, measureSource, setStationLocationPicking } = useRiverCastMap({
     stations,
@@ -127,6 +134,14 @@ function App() {
       await api(kind === 'raster' ? '/api/data/gridded' : '/api/observations/import', { method: 'POST', body: kind === 'raster' ? form : file, headers: kind === 'raster' ? {} : { 'Content-Type': file.name.endsWith('.json') ? 'application/json' : 'text/csv' } }, token);
       await Promise.all([loadStations(), loadAssets()]);
     }, kind === 'raster' ? 'Grid processed and stored in object storage.' : 'Observations imported and forecasts refreshed.');
+  }
+
+  async function fetchNoaaGrid() {
+    await withBusy(async () => {
+      const asset = await api('/api/data/gridded/noaa-gfs', { method: 'POST' }, token);
+      await loadAssets();
+      setActiveRasters((current) => ({ ...current, [asset.id]: true }));
+    }, 'NOAA GFS precipitation GRIB downloaded and added to the map.');
   }
 
   function toggleStationForm() {
@@ -214,6 +229,8 @@ function App() {
         liveLayers={liveLayers}
         mapObject={mapObject}
         uploadFile={uploadFile}
+        fetchNoaaGrid={fetchNoaaGrid}
+        busy={busy}
         activeRasters={activeRasters}
         setActiveRasters={setActiveRasters}
         toggleStationForm={toggleStationForm}

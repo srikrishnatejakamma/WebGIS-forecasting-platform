@@ -27,6 +27,7 @@ from .database import SessionLocal, get_session, initialize_database
 from .forecasting import create_forecast_run, create_forecast_run_tracked
 from .live_data import cpcb_air_quality_stations, cyclone_events, metar_stations, provider_error, radar_frames, rainfall_grid, river_gauge_stations, station_weather, waterway_lines
 from .models import ForecastRunRecord, GriddedAssetRecord, ObservationRecord, StationRecord
+from .noaa_gfs import download_latest_precipitation
 from .processing import convert_to_cog
 from .storage import ensure_bucket, upload as upload_object
 
@@ -152,6 +153,13 @@ def _scheduled_forecasts() -> None:
         logger.exception("Scheduled forecast run failed")
 
 
+def _scheduled_noaa_import() -> None:
+    try:
+        _import_latest_noaa_grid()
+    except Exception:
+        logger.exception("Scheduled NOAA GFS precipitation import failed")
+
+
 def _point(longitude: float, latitude: float):
     from shapely.geometry import Point
 
@@ -165,6 +173,7 @@ async def lifespan(_: FastAPI):
     if os.getenv("MINIO_ENDPOINT"):
         await run_in_threadpool(ensure_bucket)
     scheduler.add_job(_scheduled_forecasts, "interval", hours=6, id="rivercast-forecasts", replace_existing=True)
+    scheduler.add_job(_scheduled_noaa_import, "interval", hours=6, id="noaa-gfs-precipitation", replace_existing=True, next_run_time=datetime.now(UTC) + timedelta(seconds=30))
     scheduler.start()
     yield
     scheduler.shutdown(wait=False)
@@ -577,6 +586,67 @@ def _inspect_raster(path: Path) -> dict:
     return info
 
 
+def _save_gridded_source(source: Path, original_name: str, source_label: str, session: Session, provenance: dict | None = None) -> dict:
+    asset_id = uuid.uuid4().hex
+    suffix = source.suffix.lower()
+    target = RASTER_DIR / f"{asset_id}.tif"
+    uploaded_at = datetime.now(UTC).isoformat()
+    object_key = f"rasters/{asset_id}.tif"
+    try:
+        spatial = convert_to_cog(source, target)
+    except Exception as exc:
+        source.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+        failed_metadata = {"id": asset_id, "filename": original_name, "source": source_label, "source_format": suffix.lstrip("."), "uploaded_at": uploaded_at, "storage": "minio" if os.getenv("MINIO_ENDPOINT") else "local", "object_key": object_key, "processing_status": "failed", "processing_error": str(exc)[:300], **(provenance or {})}
+        session.add(GriddedAssetRecord(id=asset_id, filename=original_name, source_format=suffix.lstrip("."), object_key=object_key, processing_status="failed", metadata_json=failed_metadata))
+        session.commit()
+        raise HTTPException(status_code=422, detail=f"Could not prepare a Cloud-Optimized GeoTIFF: {str(exc)[:300]}") from exc
+    storage = "local"
+    if os.getenv("MINIO_ENDPOINT"):
+        try:
+            upload_object(target, object_key, "image/tiff")
+            upload_object(source, f"sources/{asset_id}{suffix}")
+            storage = "minio"
+        except Exception as exc:
+            source.unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
+            failed_metadata = {"id": asset_id, "filename": original_name, "source": source_label, "source_format": suffix.lstrip("."), "uploaded_at": uploaded_at, "storage": "minio", "object_key": object_key, "processing_status": "failed", "processing_error": f"MinIO upload failed: {str(exc)[:200]}", **(provenance or {})}
+            session.add(GriddedAssetRecord(id=asset_id, filename=original_name, source_format=suffix.lstrip("."), object_key=object_key, processing_status="failed", metadata_json=failed_metadata))
+            session.commit()
+            raise HTTPException(status_code=502, detail=f"MinIO upload failed: {str(exc)[:200]}") from exc
+    metadata = {"id": asset_id, "filename": original_name, "source": source_label, "source_format": suffix.lstrip("."), "size_bytes": source.stat().st_size, "uploaded_at": uploaded_at, "storage": storage, "object_key": object_key, "processing_status": "complete", **(provenance or {}), **spatial, **_inspect_raster(target)}
+    metadata["tile_url"] = f"/api/data/gridded/{asset_id}/tiles/{{z}}/{{x}}/{{y}}.png"
+    target.with_suffix(target.suffix + ".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    session.add(GriddedAssetRecord(id=asset_id, filename=original_name, source_format=suffix.lstrip("."), object_key=object_key, processing_status="complete", metadata_json=metadata))
+    session.commit()
+    return metadata
+
+
+def _import_latest_noaa_grid() -> dict:
+    with SessionLocal() as session:
+        RASTER_DIR.mkdir(parents=True, exist_ok=True)
+        source = RASTER_DIR / f"noaa-gfs-{uuid.uuid4().hex}.grib2"
+        run_info = download_latest_precipitation(source)
+        # Avoid duplicate layers if a manual refresh and the scheduled job
+        # happen to request the same model cycle.
+        existing = session.scalars(select(GriddedAssetRecord).where(GriddedAssetRecord.filename.like("noaa-gfs-apcp-%"))).all()
+        for record in existing:
+            if record.metadata_json.get("model_cycle") == run_info["cycle"]:
+                source.unlink(missing_ok=True)
+                return record.metadata_json
+        filename = f"noaa-gfs-apcp-{run_info['cycle'][:10].replace('-', '')}t{run_info['cycle'][11:13]}z-f003.grib2"
+        return _save_gridded_source(source, filename, "NOAA NCEP GFS 0.25°", session, {
+            "model": "GFS",
+            "model_cycle": run_info["cycle"],
+            "forecast_hour": run_info["forecast_hour"],
+            "valid_at": run_info["valid_at"],
+            "variable": "APCP",
+            "region": "India and surrounding area (5–30°N, 67–98°E)",
+            "source_url": run_info["source_url"],
+            "attribution": "NOAA National Centers for Environmental Prediction (NCEP), Global Forecast System (GFS), via NOMADS",
+        })
+
+
 @app.post("/api/data/gridded", dependencies=[Depends(_write_access)])
 async def upload_gridded_data(file: UploadFile = File(...), session: Session = Depends(get_session)) -> dict:
     suffix = Path(file.filename or "").suffix.lower()
@@ -621,6 +691,18 @@ async def upload_gridded_data(file: UploadFile = File(...), session: Session = D
     session.add(GriddedAssetRecord(id=asset_id, filename=metadata["filename"], source_format=suffix.lstrip("."), object_key=object_key, processing_status="complete", metadata_json=metadata))
     session.commit()
     return metadata
+
+
+@app.post("/api/data/gridded/noaa-gfs", dependencies=[Depends(_write_access)])
+def fetch_noaa_gfs_precipitation() -> dict:
+    """Download and publish a recent NOAA GFS precipitation forecast grid."""
+    try:
+        return _import_latest_noaa_grid()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("NOAA GFS precipitation import failed")
+        raise HTTPException(status_code=502, detail=f"NOAA GFS download or processing failed: {str(exc)[:300]}") from exc
 
 
 @app.get("/api/data/gridded")

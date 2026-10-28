@@ -38,6 +38,7 @@ To stop the stack, run `docker compose down`. To delete local database, object, 
 - Station history, forecast curves, run status/history, and manual forecast execution.
 - Scheduled forecast runs every six hours.
 - GeoTIFF, NetCDF, and GRIB/GRIB2 upload, grid inspection, COG conversion, and XYZ PNG tiles.
+- NOAA GFS 0.25° three-hour precipitation forecast downloads for India, refreshed every six hours and displayed as a gridded map layer.
 - PostGIS entities for gauges, observations, forecast runs and points, and gridded asset provenance, including failed processing status.
 - MinIO storage for original grid files and generated COGs.
 - FastAPI Swagger documentation and health endpoint.
@@ -53,6 +54,8 @@ JSON imports accept an array of objects with those fields or an object containin
 
 Gridded uploads are limited to 200 MB. The first two-dimensional variable is selected for NetCDF/GRIB unless a variable is configured in the processing helper. Higher-dimensional arrays use the first index for each extra dimension. Grid inputs need georeferencing; coordinates explicitly named latitude/longitude can default to EPSG:4326. Uploaded assets include a tile URL when COG conversion succeeds.
 
+The Data tab can download a regional GRIB2 precipitation forecast from [NOAA NCEP NOMADS GFS](https://nomads.ncep.noaa.gov/). RiverCast requests the APCP surface field for forecast hour 3 over 5–30°N, 67–98°E, converts it to a Cloud-Optimized GeoTIFF, and adds it to the map. The backend also refreshes this layer every six hours. The source cycle, valid time, region, and source URL are recorded with the asset. NOAA GFS precipitation is a weather forecast layer; it does not feed the synthetic discharge model. Access to NOAA NOMADS is required for download.
+
 ## API overview
 
 - `GET /health`, `GET /api/health`
@@ -64,6 +67,7 @@ Gridded uploads are limited to 200 MB. The first two-dimensional variable is sel
 - `POST /api/forecast-runs?hours=48&station_id=...`
 - `GET /api/forecast-runs`
 - `POST /api/data/gridded` multipart upload; `GET /api/data/gridded`
+- `POST /api/data/gridded/noaa-gfs` downloads and processes the latest available regional NOAA GFS precipitation GRIB2 file
 - `GET /api/data/gridded/{asset_id}/tiles/{z}/{x}/{y}.png`
 - `GET /api/live/stations`, `GET /api/live/rainfall`, `GET /api/live/radar`, `GET /api/live/cyclones`
 - `GET /api/live/river-stations`, `GET /api/live/air-quality-stations`
